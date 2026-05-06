@@ -1,0 +1,16 @@
+# Backtest Configuration
+exchange:
+  id: "backtest"
+
+market:
+  type: "spot"
+
+backtest:
+  start_date: "2025-01-01"
+  end_date: "2026-01-01"
+  initial_capital: 10000
+  fee_rate: 0.001
+  slippage_rate: 0.0005
+
+logging:
+  level: "INFO"
