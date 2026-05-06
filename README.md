@@ -6,10 +6,12 @@ Fee-aware cryptocurrency quantitative trading bot with support for grid trading,
 
 - **Fee-aware execution**: All strategies account for trading fees and slippage
 - **Multiple strategies**: Grid, Mean Reversion, Trend Following
+- **Multi-exchange support**: Binance, OKX, and more via CCXT
 - **Risk management**: Position sizing, circuit breakers, daily loss limits
 - **Paper trading**: Test strategies without real money
 - **Backtesting**: Validate strategies on historical data
 - **Micro account support**: Optimized config for small capital (30 USD)
+- **Operation logging**: Every step logged to JSONL for analysis
 
 ## Quick Start
 
@@ -45,26 +47,103 @@ make backtest
 python -m src.main
 ```
 
+## Exchange Configuration
+
+### OKX Setup
+
+1. Get API keys from [OKX API Management](https://www.okx.com/account/my-api)
+2. Create API key with **Trade** permission (read-only for paper trading)
+3. Copy `.env.example` to `.env` and fill in:
+
+```bash
+OKX_API_KEY=your_api_key
+OKX_SECRET=your_secret_key
+OKX_PASSWORD=your_passphrase
+OKX_SANDBOX=true  # Use demo trading environment
+```
+
+4. Run with OKX config:
+
+```bash
+# Standard OKX
+TRADING_MODE=paper CONFIG_PATH=config python -m src.main
+
+# OKX Micro Account (30 USD)
+TRADING_MODE=paper CONFIG_PATH=config/okx_micro_30usd.yaml python -m src.main
+```
+
+### Binance Setup
+
+1. Get API keys from [Binance API Management](https://www.binance.com/en/my/settings/api-management)
+2. Create API key with **Enable Spot & Margin Trading** permission
+3. Configure in `.env`:
+
+```bash
+BINANCE_API_KEY=your_api_key
+BINANCE_SECRET=your_secret
+```
+
 ## Account Size Configurations
 
 ### Standard Account (1000+ USD)
 
-Uses `config/default.yaml`:
-- Grid count: 20 levels
-- Order amount: 100 USDT per level
+Uses `config/default.yaml` or `config/okx.yaml`:
+- Grid count: 10-20 levels
+- Order amount: 50-100 USDT per level
 - Max position: 10% of equity
 
 ### Micro Account (30 USD)
 
-Uses `config/micro_30usd.yaml`:
+Uses `config/micro_30usd.yaml` or `config/okx_micro_30usd.yaml`:
 - Grid count: 5 levels
 - Order amount: 5 USDT per level
 - Max position: 15% of equity (4.5 USD)
 - Daily loss limit: 3% (0.9 USD)
 
-Run with micro config:
+## Operation Logging
+
+Every operation step is logged to `data/logs/operations.jsonl` for debugging and analysis.
+
+**Logged operations:**
+- `config_load` - Configuration loading
+- `exchange_init` - Exchange connection setup
+- `strategy_init` - Strategy initialization
+- `signal` - Signal generation
+- `risk_check` - Risk validation result
+- `order` - Order creation
+- `order_fill` - Order execution
+- `order_cancel` - Order cancellation
+- `balance` - Balance updates
+- `circuit_breaker` - Circuit breaker state changes
+- `engine` - Engine start/stop
+
+**Example log entry:**
+```json
+{
+  "timestamp": "2026-05-06T12:00:00Z",
+  "step": "order",
+  "action": "Creating BUY limit order",
+  "status": "success",
+  "details": {
+    "symbol": "BTC/USDT",
+    "side": "BUY",
+    "order_type": "limit",
+    "amount": 0.0001,
+    "price": 65000
+  }
+}
+```
+
+**Analyze logs:**
 ```bash
-TRADING_MODE=paper CONFIG_PATH=config/micro_30usd.yaml python -m src.main
+# View recent operations
+tail -f data/logs/operations.jsonl | jq .
+
+# Filter failed operations
+cat data/logs/operations.jsonl | jq 'select(.status == "failed")'
+
+# Count operations by step
+cat data/logs/operations.jsonl | jq -r '.step' | sort | uniq -c
 ```
 
 ## Project Structure
@@ -72,8 +151,10 @@ TRADING_MODE=paper CONFIG_PATH=config/micro_30usd.yaml python -m src.main
 ```
 crypto-trading-bot/
 ├── config/                 # Configuration files
-│   ├── default.yaml        # Standard config
-│   ├── micro_30usd.yaml    # Micro account (30 USD)
+│   ├── default.yaml        # Standard config (Binance)
+│   ├── okx.yaml            # OKX standard config
+│   ├── okx_micro_30usd.yaml # OKX micro account (30 USD)
+│   ├── micro_30usd.yaml    # Binance micro account (30 USD)
 │   ├── paper.yaml          # Paper trading overrides
 │   └── backtest.yaml       # Backtest overrides
 ├── src/
@@ -85,14 +166,14 @@ crypto-trading-bot/
 │   ├── backtest/           # Backtesting engine
 │   ├── config/             # Config loader
 │   ├── data/               # Data management
-│   └── utils/              # Utilities
+│   └── utils/              # Utilities (logger, operation_logger)
 ├── scripts/
 │   ├── download_data.py    # Download historical data
 │   └── run_backtest.py     # Run backtest
 ├── tests/                  # Test suite
 └── data/
     ├── historical/         # OHLCV data
-    └── logs/               # Trade journals
+    └── logs/               # Trade journals & operation logs
 ```
 
 ## Strategies
@@ -138,7 +219,8 @@ make test           # Run tests
 make test-cov       # Run tests with coverage
 make download       # Download historical data
 make backtest       # Run backtest
-make paper          # Start paper trading
+make paper          # Start paper trading (Binance)
+make paper-micro    # Start paper trading (30 USD micro)
 make lint           # Run type checking
 make clean          # Remove generated files
 ```

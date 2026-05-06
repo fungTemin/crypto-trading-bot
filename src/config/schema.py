@@ -80,6 +80,7 @@ class LoggingConfig(BaseModel):
     level: str = "INFO"
     format: str = "json"
     trade_journal: str = "data/logs/trades.csv"
+    operation_log: str = "data/logs/operations.jsonl"
 
 
 class AppConfig(BaseModel):

@@ -1,0 +1,40 @@
+# OKX Micro Account Configuration — 30 USD
+# Optimized for small capital on OKX
+
+exchange:
+  id: "okx"
+  sandbox: true              # Always test on demo first!
+  timeout: 30000
+  rate_limit: 20
+
+market:
+  type: "spot"
+  symbols:
+    - "BTC/USDT"
+    - "ETH/USDT"
+  quote_currency: "USDT"
+  timeframe: "15m"           # Longer timeframe for fewer signals
+
+strategy:
+  active: "grid"
+  min_profit_buffer_pct: 0.15  # Higher buffer for small account
+
+grid:
+  upper_price: null
+  lower_price: null
+  grid_count: 5              # Fewer grids for 30 USD
+  order_amount: 5            # 5 USDT per grid level
+
+risk:
+  max_position_pct: 15       # Max 15% per position (4.5 USD)
+  max_leverage: 1
+  max_daily_loss_pct: 3      # Tight daily loss limit (0.9 USD)
+  max_drawdown_pct: 15       # Circuit breaker at 15%
+  cooldown_seconds: 120      # Longer cooldown
+  max_concurrent_positions: 2
+
+logging:
+  level: "DEBUG"
+  format: "json"
+  trade_journal: "data/logs/okx_micro_trades.csv"
+  operation_log: "data/logs/okx_operations.jsonl"
