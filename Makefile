@@ -1,4 +1,4 @@
-.PHONY: help install test backtest download clean lint
+.PHONY: help install test backtest download clean lint paper-micro
 
 VENV := /Users/zhifeng.zhou/Documents/python/venv/bin/activate
 
@@ -31,6 +31,9 @@ backtest:
 
 paper:
 	. $(VENV) && TRADING_MODE=paper python -m src.main
+
+paper-micro:
+	. $(VENV) && TRADING_MODE=paper CONFIG_PATH=config/micro_30usd.yaml python -m src.main
 
 lint:
 	. $(VENV) && mypy src/ --ignore-missing-imports
