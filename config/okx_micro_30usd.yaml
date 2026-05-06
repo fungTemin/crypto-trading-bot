@@ -1,5 +1,5 @@
 # OKX Micro Account Configuration — 30 USD
-# Optimized for small capital on OKX
+# Optimized for meme coins and low-value mainstream coins
 
 exchange:
   id: "okx"
@@ -10,19 +10,24 @@ exchange:
 market:
   type: "spot"
   symbols:
-    - "BTC/USDT"
-    - "ETH/USDT"
+    - "DOGE/USDT"            # Meme coin - Dogecoin
+    - "SHIB/USDT"            # Meme coin - Shiba Inu
+    - "PEPE/USDT"            # Meme coin - Pepe
+    - "XRP/USDT"             # Low-value mainstream
+    - "ADA/USDT"             # Low-value mainstream
+    - "SOL/USDT"             # Mainstream altcoin
   quote_currency: "USDT"
-  timeframe: "15m"           # Longer timeframe for fewer signals
+  timeframe: "5m"            # Shorter timeframe for volatility
 
 strategy:
-  active: "grid"
-  min_profit_buffer_pct: 0.15  # Higher buffer for small account
+  active: "mean_reversion"   # Better for volatile meme coins
+  min_profit_buffer_pct: 0.2 # Higher buffer for meme coin volatility
 
+# Grid settings for low-value coins
 grid:
-  upper_price: null
+  upper_price: null          # Auto-detect
   lower_price: null
-  grid_count: 5              # Fewer grids for 30 USD
+  grid_count: 5
   order_amount: 5            # 5 USDT per grid level
 
 risk:

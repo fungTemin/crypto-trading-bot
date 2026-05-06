@@ -55,6 +55,10 @@ backtest:
   fee_rate: 0.001            # 0.1% per side
   slippage_rate: 0.001       # Higher slippage assumption for small orders
 
+# Initial capital for paper trading (override in backtest section)
+paper:
+  initial_capital: 30        # 30 USD
+
 logging:
   level: "INFO"
   format: "json"
