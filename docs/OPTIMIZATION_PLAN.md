@@ -22,13 +22,13 @@ After 2 entries, all 709 subsequent signals rejected due to insufficient balance
 
 ## Optimization Items
 
-| Priority | Issue | Current | Target | Expected Impact |
-|:---|:---|:---|:---|:---|
-| **P0** | Per-trade size limits concurrency | $10 (33%) | **$7 (23%)** | 3-4 concurrent → 4-6 exits/30min |
-| **P0** | Fixed sizing doesn't scale with equity | Fixed $10 | **equity × 0.25** | Auto-size up on wins, down on losses |
-| **P1** | Expected return hardcoded | `exp_ret=2.00%` | Actual distance to TP | Fee gate becomes meaningful |
-| **P1** | Immediate re-entry after capital freed | 0s delay | Wait 1 kline for confirmation | Avoid chasing pumps |
-| **P2** | No partial take-profit | 100% exit | 50% TP + 50% trailing | Capture larger moves (DOGS +4.15% vs +2%) |
+| Priority | Issue | Current | Target | Expected Impact | Status |
+|:---|:---|:---|:---|:---|:---|
+| **P0** | Per-trade size limits concurrency | $10 (33%) | **$7 (23%)** | 3-4 concurrent → 4-6 exits/30min | ✅ Done |
+| **P0** | Fixed sizing doesn't scale with equity | Fixed $10 | **equity × 0.25** | Auto-size up on wins, down on losses | ✅ Done |
+| **P1** | Expected return hardcoded | `exp_ret=2.00%` | Actual distance to TP | Fee gate becomes meaningful | ✅ Already correct |
+| **P1** | Immediate re-entry after capital freed | 0s delay | Wait 1 kline for confirmation | Avoid chasing pumps | ✅ Done |
+| **P2** | No partial take-profit | 100% exit | 50% TP + 50% trailing | Capture larger moves (DOGS +4.15% vs +2%) | Pending |
 
 ## Projected Improvement
 
