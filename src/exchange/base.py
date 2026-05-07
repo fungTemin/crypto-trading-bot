@@ -8,7 +8,7 @@ from src.exchange.models import Balance, Fill, Order, Position, Ticker
 
 
 class FeeSchedule:
-    """Exchange fee structure."""
+    """Exchange fee structure — single source of truth for fee rates."""
 
     def __init__(
         self,
@@ -25,11 +25,18 @@ class FeeSchedule:
 
     @classmethod
     def spot_default(cls) -> FeeSchedule:
+        """Spot market: typically 0.1% per side."""
         return cls(maker=Decimal("0.001"), taker=Decimal("0.001"))
 
     @classmethod
     def futures_default(cls) -> FeeSchedule:
+        """Futures: typically 0.02% maker, 0.04% taker."""
         return cls(maker=Decimal("0.0002"), taker=Decimal("0.0004"))
+
+    # Aliases for backward compatibility with code that used the old
+    # duplicate FeeSchedule from strategy/fee_calculator.py
+    spot = spot_default
+    futures = futures_default
 
 
 class ExchangeInterface(ABC):

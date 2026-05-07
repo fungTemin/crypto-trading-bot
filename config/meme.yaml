@@ -59,10 +59,49 @@ meme_scalper:
   rsi_period: 8
   rsi_entry_min: 35
   rsi_entry_max: 65
+  rsi_short_min: 55
+  rsi_long_max: 65
   take_profit_pct: 2.0
   stop_loss_pct: 2.5
   max_hold_minutes: 45
   trailing_stop_pct: 1.0
+  kline_lookback: 20
+  base_order_usdt: 10
+  kline_interval: 60.0
+
+synthetic_profiles:
+  PEPE/USDT:    {base_price: 0.00001000, volatility: 0.015, base_volume: 2000000}
+  FLOKI/USDT:   {base_price: 0.00010000, volatility: 0.012, base_volume: 800000}
+  WIF/USDT:     {base_price: 0.50000000, volatility: 0.018, base_volume: 3000000}
+  BONK/USDT:    {base_price: 0.00002000, volatility: 0.014, base_volume: 1500000}
+  MEME/USDT:    {base_price: 0.01500000, volatility: 0.016, base_volume: 600000}
+  SHIB/USDT:    {base_price: 0.00002000, volatility: 0.010, base_volume: 5000000}
+  DOGE/USDT:    {base_price: 0.15000000, volatility: 0.008, base_volume: 10000000}
+  TURBO/USDT:   {base_price: 0.00500000, volatility: 0.020, base_volume: 400000}
+  MEW/USDT:     {base_price: 0.00300000, volatility: 0.018, base_volume: 300000}
+  BOME/USDT:    {base_price: 0.01000000, volatility: 0.019, base_volume: 500000}
+  NEIRO/USDT:   {base_price: 0.00080000, volatility: 0.022, base_volume: 600000}
+  BABYDOGE/USDT: {base_price: 0.000000001, volatility: 0.020, base_volume: 300000}
+  DOGS/USDT:    {base_price: 0.00009000, volatility: 0.040, base_volume: 100000000}
+  HMSTR/USDT:   {base_price: 0.00020000, volatility: 0.025, base_volume: 10000000}
+  NOT/USDT:     {base_price: 0.00060000, volatility: 0.022, base_volume: 5000000}
+  DUCK/USDT:    {base_price: 0.00010000, volatility: 0.025, base_volume: 3000000}
+  CAT/USDT:     {base_price: 0.00003000, volatility: 0.015, base_volume: 50000000}
+  JTO/USDT:     {base_price: 0.40000000, volatility: 0.020, base_volume: 8000000}
+  STORJ/USDT:   {base_price: 0.11000000, volatility: 0.022, base_volume: 5000000}
+  CFG/USDT:     {base_price: 0.27000000, volatility: 0.020, base_volume: 6000000}
+  CATI/USDT:    {base_price: 0.07000000, volatility: 0.018, base_volume: 5000000}
+  VIRTUAL/USDT: {base_price: 0.95000000, volatility: 0.018, base_volume: 3000000}
+  MAJOR/USDT:   {base_price: 0.08000000, volatility: 0.018, base_volume: 1500000}
+  ICP/USDT:     {base_price: 3.00000000, volatility: 0.016, base_volume: 2000000}
+  BIO/USDT:     {base_price: 0.04500000, volatility: 0.020, base_volume: 100000000}
+  VINE/USDT:    {base_price: 0.01700000, volatility: 0.018, base_volume: 30000000}
+  NEAR/USDT:    {base_price: 1.50000000, volatility: 0.014, base_volume: 4000000}
+  OP/USDT:      {base_price: 0.14000000, volatility: 0.014, base_volume: 20000000}
+  ENA/USDT:     {base_price: 0.30000000, volatility: 0.015, base_volume: 30000000}
+  STRK/USDT:    {base_price: 0.04000000, volatility: 0.015, base_volume: 60000000}
+  ONDO/USDT:    {base_price: 0.80000000, volatility: 0.014, base_volume: 12000000}
+  ZK/USDT:      {base_price: 0.06000000, volatility: 0.015, base_volume: 50000000}
 
 risk:
   max_position_pct: 40

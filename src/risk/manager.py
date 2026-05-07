@@ -87,17 +87,21 @@ class RiskManager:
         base, quote = signal.symbol.split("/", 1)
         if signal.order_side == OrderSide.BUY:
             quote_balance = balances.get(quote)
-            if quote_balance is None or quote_balance.free < signal.price * signal.amount:
+            if quote_balance is None:
                 return False, f"Insufficient {quote} balance"
+            # Include estimated fee in cost check
+            total_cost = signal.price * signal.amount * (Decimal("1") + Decimal("0.001"))
+            if quote_balance.free < total_cost:
+                return False, f"Insufficient {quote} balance (need {total_cost})"
 
         if signal.order_side == OrderSide.SELL:
             base_balance = balances.get(base)
             if base_balance is None or base_balance.free < signal.amount:
                 return False, f"Insufficient {base} balance"
 
-        # 6. Order book depth check (optional, requires ticker)
-        # Simple version: ensure amount * price is within reasonable range
-        if signal.amount * signal.price > equity * (self.position_sizer.max_position_pct):
+        # 6. Position size check (accounts for leverage in futures mode)
+        max_notional = equity * self.position_sizer.max_position_pct * Decimal(str(self.position_sizer.max_leverage))
+        if signal.amount * signal.price > max_notional:
             return False, "Position size exceeds max allowed"
 
         # If YELLOW state, reduce position size

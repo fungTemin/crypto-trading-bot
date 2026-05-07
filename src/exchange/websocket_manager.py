@@ -67,7 +67,7 @@ class DataFeedManager:
                 ticker = await self._exchange.fetch_ticker(symbol)
 
                 # Fetch OHLCV and update store
-                candles_raw = await self._exchange.fetch_ohlcv(symbol, self._timeframe, limit=100)
+                candles_raw = await self._exchange.fetch_ohlcv(symbol, self._timeframe, limit=2)
                 candles = [Candle.from_ccxt(c) for c in candles_raw]
                 for c in candles:
                     self._ohlcv.add(symbol, self._timeframe, c)

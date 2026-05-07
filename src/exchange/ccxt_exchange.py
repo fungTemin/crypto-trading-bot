@@ -100,16 +100,27 @@ class CCXTExchange(ExchangeInterface):
             balances = await self.fetch_balance()
             # Spot positions derived from non-quote balances
             positions: list[Position] = []
-            tickers: dict[str, Ticker] = {}
+            # Fetch tickers concurrently for all held assets
+            symbols_to_fetch = []
+            for asset, bal in balances.items():
+                if bal.total > 0:
+                    symbols_to_fetch.append(f"{asset}/USDT")
+
+            async def _fetch_safe(sym: str):
+                try:
+                    return sym, await self.fetch_ticker(sym)
+                except Exception:
+                    return sym, None
+
+            ticker_results = await asyncio.gather(*[_fetch_safe(s) for s in symbols_to_fetch])
+            tickers: dict[str, Ticker] = {s: t for s, t in ticker_results if t is not None}
+
             for asset, bal in balances.items():
                 if bal.total > 0:
                     symbol = f"{asset}/USDT"
-                    if symbol not in tickers:
-                        try:
-                            tickers[symbol] = await self.fetch_ticker(symbol)
-                        except Exception:
-                            continue
-                    ticker = tickers[symbol]
+                    ticker = tickers.get(symbol)
+                    if ticker is None:
+                        continue
                     positions.append(Position(
                         symbol=symbol,
                         side=OrderSide.BUY,

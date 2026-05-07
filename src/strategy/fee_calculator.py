@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from src.core.constants import MarketType
+from src.exchange.base import FeeSchedule
 
 
 @dataclass(frozen=True)
@@ -81,21 +82,9 @@ class FeeEstimate:
         return entry_price * (Decimal("1") - self.round_trip_rate - min_buffer)
 
 
-@dataclass(frozen=True)
-class FeeSchedule:
-    """Fee structure for a market type."""
-    maker: Decimal
-    taker: Decimal
-
-    @classmethod
-    def spot(cls, maker_pct: Decimal = Decimal("0.001"), taker_pct: Decimal = Decimal("0.001")) -> FeeSchedule:
-        """Spot market: typically 0.1% per side."""
-        return cls(maker=maker_pct, taker=taker_pct)
-
-    @classmethod
-    def futures(cls, maker_pct: Decimal = Decimal("0.0002"), taker_pct: Decimal = Decimal("0.0004")) -> FeeSchedule:
-        """Futures: typically 0.02% maker, 0.04% taker."""
-        return cls(maker=maker_pct, taker=taker_pct)
+# FeeSchedule is imported from src/exchange/base.py — single source of truth.
+# Historical note: this module previously defined its own FeeSchedule copy;
+# it was removed during the DRY unification pass (2026-05).
 
 
 class FeeCalculator:

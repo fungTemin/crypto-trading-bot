@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
-import random
 import signal
 import sys
 import time as time_module
@@ -30,15 +28,18 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.layout import Layout
 
+from src.config.loader import load_config
 from src.core.constants import MarketType, OrderSide, SignalType
 from src.core.event_bus import EventBus
 from src.exchange.models import Ticker
 from src.exchange.paper_exchange import PaperExchange
+from src.exchange.synthetic_feed import SyntheticTickerFeed
 from src.strategy.fee_calculator import FeeCalculator, FeeSchedule
 from src.strategy.meme_scalper import MemeScalperStrategy
 from src.risk.circuit_breaker import CircuitBreaker
 from src.risk.manager import RiskManager
 from src.risk.position_sizer import PositionSizer
+from src.utils.local_trade_logger import LocalTradeLogger
 from src.utils.logger import TradeLogger, setup_logger
 
 logger = setup_logger("meme_bot", level="INFO", fmt="text")
@@ -46,223 +47,21 @@ console = Console()
 
 # ---- Local File Logger (gitignored, never uploaded) ----
 
-class LocalTradeLogger:
-    """Writes trade records to local files only (data/logs/ is gitignored)."""
+def load_meme_config() -> tuple[list[str], dict]:
+    """Load meme bot configuration from config/meme.yaml.
 
-    def __init__(self, base_path: str = "data/logs") -> None:
-        import os as _os
-        _os.makedirs(base_path, exist_ok=True)
-        session_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        self.session_id = session_ts
-        self.csv_path = f"{base_path}/meme_session_{session_ts}.csv"
-        self.txt_path = f"{base_path}/meme_session_{session_ts}.txt"
-        self.json_path = f"{base_path}/meme_session_{session_ts}.json"
-
-        # Write CSV header
-        with open(self.csv_path, "w") as f:
-            f.write("timestamp,action,symbol,price,amount,expected_return_pct,exit_reason,"
-                    "entry_price,gross_pnl,net_pnl,net_pnl_pct,total_fees\n")
-
-        # Write text header
-        with open(self.txt_path, "w") as f:
-            f.write(f"=== Meme Bot Session {session_ts} ===\n")
-            f.write(f"Started: {datetime.now(timezone.utc).isoformat()}\n\n")
-
-        self._json_records: list[dict] = []
-
-    def log_entry(self, symbol: str, price: Decimal, amount: Decimal,
-                  expected_return: str, fee: Decimal) -> None:
-        """Log a BUY entry."""
-        ts = datetime.now(timezone.utc).isoformat()
-        price_str = f"{float(price):.10f}".rstrip('0').rstrip('.')
-        amount_str = f"{float(amount):.6f}".rstrip('0').rstrip('.')
-
-        # CSV
-        with open(self.csv_path, "a") as f:
-            f.write(f"{ts},BUY,{symbol},{price_str},{amount_str},{expected_return},,,,,\n")
-
-        # Text log
-        with open(self.txt_path, "a") as f:
-            f.write(f"[{ts[:19]}] ▶ BUY  {symbol:12s} @ {price_str:>16s}  "
-                    f"qty={amount_str:>12s}  expected_ret={expected_return}  "
-                    f"fee≈${float(fee):.4f}\n")
-
-        # JSON buffer
-        self._json_records.append({
-            "timestamp": ts, "action": "BUY", "symbol": symbol,
-            "price": float(price), "amount": float(amount),
-            "expected_return_pct": expected_return, "fee": float(fee),
-        })
-
-    def log_exit(self, symbol: str, exit_price: Decimal, entry_price: Decimal,
-                 amount: Decimal, exit_reason: str, gross_pnl: Decimal,
-                 net_pnl: Decimal, net_pnl_pct: Decimal,
-                 entry_fee: Decimal, exit_fee: Decimal) -> None:
-        """Log a SELL exit with full P&L breakdown."""
-        ts = datetime.now(timezone.utc).isoformat()
-        exit_str = f"{float(exit_price):.10f}".rstrip('0').rstrip('.')
-        entry_str = f"{float(entry_price):.10f}".rstrip('0').rstrip('.')
-        amount_str = f"{float(amount):.6f}".rstrip('0').rstrip('.')
-        total_fee = entry_fee + exit_fee
-
-        # CSV
-        with open(self.csv_path, "a") as f:
-            f.write(f"{ts},SELL,{symbol},{exit_str},{amount_str},,{exit_reason},"
-                    f"{entry_str},{float(gross_pnl):.6f},{float(net_pnl):.6f},"
-                    f"{float(net_pnl_pct):.4f},{float(total_fee):.6f}\n")
-
-        # Text log
-        pnl_mark = "+" if net_pnl >= 0 else ""
-        with open(self.txt_path, "a") as f:
-            f.write(f"[{ts[:19]}] ◀ SELL {symbol:12s} @ {exit_str:>16s}  "
-                    f"entry={entry_str:>16s}  qty={amount_str:>12s}\n"
-                    f"         reason: {exit_reason}\n"
-                    f"         gross:  ${float(gross_pnl):+.6f}  "
-                    f"net: ${float(net_pnl):+.6f} ({float(net_pnl_pct):+.2f}%)  "
-                    f"fees: ${float(total_fee):.6f}\n"
-                    f"         result: {pnl_mark}${float(net_pnl):+.6f}\n\n")
-
-        # JSON buffer
-        self._json_records.append({
-            "timestamp": ts, "action": "SELL", "symbol": symbol,
-            "exit_price": float(exit_price), "entry_price": float(entry_price),
-            "amount": float(amount), "exit_reason": exit_reason,
-            "gross_pnl": float(gross_pnl), "net_pnl": float(net_pnl),
-            "net_pnl_pct": float(net_pnl_pct),
-            "entry_fee": float(entry_fee), "exit_fee": float(exit_fee),
-            "total_fee": float(total_fee),
-        })
-
-    def log_summary(self, mode: str, start_capital: Decimal, final_equity: Decimal,
-                    total_trades: int, buys: int, sells: int, total_fees: Decimal,
-                    tp_count: int, sl_count: int, trail_count: int, time_count: int,
-                    runtime_secs: float) -> str:
-        """Write session summary and return the log file paths."""
-        pnl = final_equity - start_capital
-        pnl_pct = float(pnl / start_capital * 100) if start_capital > 0 else 0
-
-        summary = (
-            f"\n=== Session Summary ===\n"
-            f"Mode:           {mode}\n"
-            f"Runtime:        {int(runtime_secs // 60)}m {int(runtime_secs % 60)}s\n"
-            f"Total trades:   {total_trades}\n"
-            f"Buys:           {buys}\n"
-            f"Sells:          {sells}\n"
-            f"TP exits:       {tp_count}\n"
-            f"SL exits:       {sl_count}\n"
-            f"Trailing exits: {trail_count}\n"
-            f"Time exits:     {time_count}\n"
-            f"Starting:       ${float(start_capital):.2f}\n"
-            f"Final equity:   ${float(final_equity):.2f}\n"
-            f"P&L:            ${float(pnl):+.4f} ({pnl_pct:+.2f}%)\n"
-            f"Total fees:     ${float(total_fees):.4f}\n"
-            f"Ended:          {datetime.now(timezone.utc).isoformat()}\n"
-        )
-
-        with open(self.txt_path, "a") as f:
-            f.write(summary)
-
-        # JSON
-        import json as _json
-        json_summary = {
-            "session_id": self.session_id,
-            "mode": mode,
-            "runtime_seconds": runtime_secs,
-            "start_capital": float(start_capital),
-            "final_equity": float(final_equity),
-            "pnl": float(pnl),
-            "pnl_pct": pnl_pct,
-            "total_trades": total_trades,
-            "buys": buys,
-            "sells": sells,
-            "tp_exits": tp_count,
-            "sl_exits": sl_count,
-            "trailing_exits": trail_count,
-            "time_exits": time_count,
-            "total_fees": float(total_fees),
-            "trades": self._json_records,
+    Returns (symbols, profiles) from the config system.
+    """
+    config = load_config("config", mode="meme")
+    symbols = config.market.symbols
+    profiles = {}
+    for sym, profile in config.strategy.synthetic_profiles.items():
+        profiles[sym] = {
+            "base_price": profile.base_price,
+            "volatility": profile.volatility,
+            "base_volume": profile.base_volume,
         }
-        with open(self.json_path, "w") as f:
-            _json.dump(json_summary, f, indent=2, default=str)
-
-        return f"{self.csv_path}\n{self.txt_path}\n{self.json_path}"
-
-MEME_SYMBOLS = [
-    # === Meme coins (proven high vol) ===
-    "PEPE/USDT", "FLOKI/USDT", "WIF/USDT", "BONK/USDT",
-    "MEME/USDT", "SHIB/USDT", "DOGE/USDT",
-    "TURBO/USDT", "MEW/USDT", "BOME/USDT",
-    "NEIRO/USDT", "BABYDOGE/USDT",
-    # === Today's top volatility (24h scan) ===
-    "DOGS/USDT",    # +71%, 59% range — massive pump
-    "HMSTR/USDT",   # +22%, 33% range
-    "NOT/USDT",     # +23%, 29% range
-    "DUCK/USDT",    # +12%, 31% range
-    "CAT/USDT",     # +8%, 11% range, $50B vol
-    # === High volatility small/mid caps ===
-    "JTO/USDT",     # 27% range
-    "STORJ/USDT",   # 27% range
-    "CFG/USDT",     # 20% range
-    "CATI/USDT",    # 20% range
-    "VIRTUAL/USDT", # 17% range, AI narrative
-    "MAJOR/USDT",   # 19% range
-    "ICP/USDT",     # 18% range
-    "BIO/USDT",     # 17% range
-    "VINE/USDT",    # 16% range
-    # === Large cap volatile ===
-    "NEAR/USDT",    # 13% range
-    "OP/USDT",      # 13% range
-    "ENA/USDT",     # 12% range
-    "STRK/USDT",    # 12% range
-    "ONDO/USDT",    # 11% range, RWA
-    "ZK/USDT",      # 11% range, L2
-]
-
-MEME_PROFILES = {
-    # Meme
-    "PEPE/USDT":    {"base_price": Decimal("0.00001000"), "volatility": 0.015, "base_volume": 2_000_000},
-    "FLOKI/USDT":   {"base_price": Decimal("0.00010000"), "volatility": 0.012, "base_volume": 800_000},
-    "WIF/USDT":     {"base_price": Decimal("0.50000000"), "volatility": 0.018, "base_volume": 3_000_000},
-    "BONK/USDT":    {"base_price": Decimal("0.00002000"), "volatility": 0.014, "base_volume": 1_500_000},
-    "MEME/USDT":    {"base_price": Decimal("0.01500000"), "volatility": 0.016, "base_volume": 600_000},
-    "SHIB/USDT":    {"base_price": Decimal("0.00002000"), "volatility": 0.010, "base_volume": 5_000_000},
-    "DOGE/USDT":    {"base_price": Decimal("0.15000000"), "volatility": 0.008, "base_volume": 10_000_000},
-    "TURBO/USDT":   {"base_price": Decimal("0.00500000"), "volatility": 0.020, "base_volume": 400_000},
-    "MEW/USDT":     {"base_price": Decimal("0.00300000"), "volatility": 0.018, "base_volume": 300_000},
-    "BOME/USDT":    {"base_price": Decimal("0.01000000"), "volatility": 0.019, "base_volume": 500_000},
-    "NEIRO/USDT":   {"base_price": Decimal("0.00080000"), "volatility": 0.022, "base_volume": 600_000},
-    "BABYDOGE/USDT":{"base_price": Decimal("0.000000001"), "volatility": 0.020, "base_volume": 300_000},
-    # Small cap / narrative
-    "PEOPLE/USDT":  {"base_price": Decimal("0.03000000"), "volatility": 0.015, "base_volume": 400_000},
-    "ORDI/USDT":    {"base_price": Decimal("30.000000"), "volatility": 0.014, "base_volume": 300_000},
-    "AGLD/USDT":    {"base_price": Decimal("1.00000000"), "volatility": 0.018, "base_volume": 200_000},
-    "ID/USDT":      {"base_price": Decimal("0.30000000"), "volatility": 0.017, "base_volume": 250_000},
-    "ACE/USDT":     {"base_price": Decimal("2.00000000"), "volatility": 0.016, "base_volume": 200_000},
-    "BIGTIME/USDT": {"base_price": Decimal("0.15000000"), "volatility": 0.019, "base_volume": 300_000},
-    # Mid cap volatile (replaced with today's top volatility)
-    # Today's top finds
-    "DOGS/USDT":    {"base_price": Decimal("0.00009000"), "volatility": 0.040, "base_volume": 100_000_000},
-    "HMSTR/USDT":   {"base_price": Decimal("0.00020000"), "volatility": 0.025, "base_volume": 10_000_000},
-    "NOT/USDT":     {"base_price": Decimal("0.00060000"), "volatility": 0.022, "base_volume": 5_000_000},
-    "DUCK/USDT":    {"base_price": Decimal("0.00010000"), "volatility": 0.025, "base_volume": 3_000_000},
-    "CAT/USDT":     {"base_price": Decimal("0.00003000"), "volatility": 0.015, "base_volume": 50_000_000},
-    "JTO/USDT":     {"base_price": Decimal("0.40000000"), "volatility": 0.020, "base_volume": 8_000_000},
-    "STORJ/USDT":   {"base_price": Decimal("0.11000000"), "volatility": 0.022, "base_volume": 5_000_000},
-    "CFG/USDT":     {"base_price": Decimal("0.27000000"), "volatility": 0.020, "base_volume": 6_000_000},
-    "CATI/USDT":    {"base_price": Decimal("0.07000000"), "volatility": 0.018, "base_volume": 5_000_000},
-    "VIRTUAL/USDT": {"base_price": Decimal("0.95000000"), "volatility": 0.018, "base_volume": 3_000_000},
-    "MAJOR/USDT":   {"base_price": Decimal("0.08000000"), "volatility": 0.018, "base_volume": 1_500_000},
-    "ICP/USDT":     {"base_price": Decimal("3.00000000"), "volatility": 0.016, "base_volume": 2_000_000},
-    "BIO/USDT":     {"base_price": Decimal("0.04500000"), "volatility": 0.020, "base_volume": 100_000_000},
-    "VINE/USDT":    {"base_price": Decimal("0.01700000"), "volatility": 0.018, "base_volume": 30_000_000},
-    # Large cap volatile
-    "NEAR/USDT":    {"base_price": Decimal("1.50000000"), "volatility": 0.014, "base_volume": 4_000_000},
-    "OP/USDT":      {"base_price": Decimal("0.14000000"), "volatility": 0.014, "base_volume": 20_000_000},
-    "ENA/USDT":     {"base_price": Decimal("0.30000000"), "volatility": 0.015, "base_volume": 30_000_000},
-    "STRK/USDT":    {"base_price": Decimal("0.04000000"), "volatility": 0.015, "base_volume": 60_000_000},
-    "ONDO/USDT":    {"base_price": Decimal("0.80000000"), "volatility": 0.014, "base_volume": 12_000_000},
-    "ZK/USDT":      {"base_price": Decimal("0.06000000"), "volatility": 0.015, "base_volume": 50_000_000},
-}
+    return symbols, profiles
 
 
 def format_price(p: Decimal) -> str:
@@ -276,60 +75,6 @@ def format_pnl(value: Decimal, pct: Decimal) -> str:
     return f"[{color}]${float(value):+.4f} ({float(pct):+.2f}%)[/{color}]"
 
 
-# ---- Synthetic Data Feed (offline mode) ----
-
-class SyntheticTickerFeed:
-    def __init__(self, symbols: list[str], seed: int = 42) -> None:
-        self.symbols = symbols
-        rng = random.Random(seed)
-        self._states: dict[str, dict] = {}
-        for sym in symbols:
-            profile = MEME_PROFILES[sym]
-            self._states[sym] = {
-                "price": float(profile["base_price"]),
-                "base_vol": profile["base_volume"],
-                "volatility": profile["volatility"],
-                "rng": random.Random(rng.randint(1, 10000)),
-                "pump_chance": 0.10,
-                "pump_active": False,
-                "pump_strength": 0,
-                "pump_remaining": 0,
-            }
-
-    async def fetch_ticker(self, symbol: str) -> Ticker:
-        state = self._states[symbol]
-        rng = state["rng"]
-        vol_pct = state["volatility"]
-        if state["pump_active"]:
-            vol_pct *= 2
-            state["pump_remaining"] -= 1
-            if state["pump_remaining"] <= 0:
-                state["pump_active"] = False
-
-        change = rng.gauss(0, vol_pct)
-        state["price"] = max(state["price"] * (1 + change), 1e-12)
-        price = Decimal(str(state["price"]))
-
-        if not state["pump_active"] and rng.random() < state["pump_chance"]:
-            state["pump_active"] = True
-            state["pump_strength"] = rng.uniform(2.0, 6.0)
-            state["pump_remaining"] = rng.randint(3, 8)
-
-        if state["pump_active"]:
-            volume = Decimal(str(int(state["base_vol"] * state["pump_strength"])))
-        else:
-            volume = Decimal(str(int(state["base_vol"] * rng.uniform(0.3, 1.7))))
-
-        spread = price * Decimal("0.001")
-        return Ticker(
-            symbol=symbol, bid=price - spread / 2, ask=price + spread / 2,
-            last=price,
-            high=price * (Decimal("1") + Decimal(str(abs(rng.gauss(0, vol_pct))))),
-            low=price * (Decimal("1") - Decimal(str(abs(rng.gauss(0, vol_pct))))),
-            volume=volume,
-            timestamp=datetime.now(timezone.utc),
-        )
-
 
 # ---- Meme Bot ----
 
@@ -339,13 +84,16 @@ class MemeBot:
     MODE_LIVE = "live"
 
     def __init__(self, mode: str = MODE_OFFLINE, capital: Decimal = Decimal("30"),
-                 proxy: str | None = None, market_type: MarketType = MarketType.SPOT) -> None:
+                 proxy: str | None = None, market_type: MarketType = MarketType.SPOT,
+                 symbols: list[str] | None = None, profiles: dict | None = None) -> None:
         self.mode = mode
         self.market_type = market_type
         self.starting_capital = capital
         self.trades: list[dict] = []      # trade history log
         self.open_positions: dict[str, dict] = {}  # symbol -> entry info
         self.proxy = proxy
+        self._symbols = symbols or []
+        self._profiles = profiles or {}
 
         self.exchange = PaperExchange(initial_balances={"USDT": capital})
         from src.exchange.base import FeeSchedule as ExFS
@@ -363,12 +111,13 @@ class MemeBot:
             event_bus=self.event_bus,
             min_volume_usdt=Decimal("100000"), volume_spike_ratio=Decimal("1.2"),
             momentum_lookback=6, ema_period=5, rsi_period=8,
-            rsi_entry_min=35, rsi_entry_max=65,
+            rsi_long_min=35, rsi_long_max=55,
+            rsi_short_min=55, rsi_short_max=75,
             take_profit_pct=Decimal("2"), stop_loss_pct=Decimal("2.5"),
-            max_hold_minutes=45, trailing_stop_pct=Decimal("1"),
+            max_hold_minutes=15, trailing_stop_pct=Decimal("1"),
             base_order_usdt=base_order,
         )
-        self.strategy.set_symbols(MEME_SYMBOLS)
+        self.strategy.set_symbols(self._symbols)
 
         self.circuit_breaker = CircuitBreaker(
             initial_equity=capital, max_daily_loss_pct=Decimal("15"),
@@ -443,7 +192,7 @@ class MemeBot:
         table.add_column("Float P&L", justify="right")
         table.add_column("Signal", justify="left")
 
-        for sym in MEME_SYMBOLS:
+        for sym in self._symbols:
             state = self.strategy._coins.get(sym)
             if state is None or state.last_price == 0:
                 table.add_row(sym, "—", "—", "—", "—", "—", "—", "—")
@@ -451,17 +200,16 @@ class MemeBot:
 
             price_str = format_price(state.last_price)
             vol_str = "—"
-            if state.avg_volume > 0 and state.last_volume > 0:
-                ratio = float(state.last_volume / state.avg_volume)
+            if state.kline_avg_volume > 0 and state.last_volume > 0:
+                ratio = float(state.last_volume / state.kline_avg_volume)
                 vc = "green" if ratio >= 2.0 else ("yellow" if ratio >= 1.5 else "white")
                 vol_str = f"[{vc}]{ratio:.1f}x[/{vc}]"
 
             rsi_str = "—"
-            if len(state.price_history) >= 9:
-                rsi_val = self.strategy._calc_rsi(state.price_history, 8)
-                if rsi_val is not None:
-                    rc = "red" if rsi_val >= 70 else ("green" if rsi_val <= 30 else "white")
-                    rsi_str = f"[{rc}]{rsi_val:.0f}[/{rc}]"
+            if state.cached_rsi != 50.0 or len(state.price_history) >= 9:
+                rsi_val = state.cached_rsi
+                rc = "red" if rsi_val >= 70 else ("green" if rsi_val <= 30 else "white")
+                rsi_str = f"[{rc}]{rsi_val:.0f}[/{rc}]"
 
             position_info = self.open_positions.get(sym)
             if state.in_position and position_info:
@@ -545,18 +293,18 @@ class MemeBot:
         self._running = True
         self._session_start = time_module.time()
         self._tick_count = 0
-        print(f"[START] Bot starting with {len(MEME_SYMBOLS)} symbols, mode={self.mode}", flush=True)
+        print(f"[START] Bot starting with {len(self._symbols)} symbols, mode={self.mode}", flush=True)
 
         if self.mode == self.MODE_OFFLINE:
             console.print("[cyan]Offline simulation[/cyan]")
-            self._data_feed = SyntheticTickerFeed(MEME_SYMBOLS, seed=random.randint(1, 9999))
+            self._data_feed = SyntheticTickerFeed(self._symbols, self._profiles, seed=random.randint(1, 9999))
         elif self.mode == self.MODE_PAPER:
             console.print("[yellow]Paper trading — real OKX prices[/yellow]")
             self._data_feed = await self._setup_real_feed()
             if self._data_feed is None:
                 console.print("[red]OKX unreachable, falling back to offline mode[/red]")
                 self.mode = self.MODE_OFFLINE
-                self._data_feed = SyntheticTickerFeed(MEME_SYMBOLS)
+                self._data_feed = SyntheticTickerFeed(self._symbols, self._profiles)
         elif self.mode == self.MODE_LIVE:
             console.print("[bold red]LIVE TRADING — REAL MONEY AT RISK[/bold red]")
             self._data_feed = await self._setup_real_feed()
@@ -567,7 +315,7 @@ class MemeBot:
         mt_text = "SPOT" if self.market_type == MarketType.SPOT else "FUTURES"
         console.print(f"Capital: ${float(self.starting_capital):.2f}  |  "
                       f"Market: {mt_text}  |  "
-                      f"Symbols: {len(MEME_SYMBOLS)}  |  "
+                      f"Symbols: {len(self._symbols)}  |  "
                       f"Min vol: $200k  |  TP: ±2%  |  SL: ±2.5%")
         console.print("=" * 70)
 
@@ -586,31 +334,41 @@ class MemeBot:
     async def _tick(self, live: Live, layout: Layout) -> None:
         self._tick_count = getattr(self, '_tick_count', 0) + 1
         if self._tick_count == 1 or self._tick_count % 60 == 0:
-            print(f"[TICK #{self._tick_count}] looping {len(MEME_SYMBOLS)} symbols...", flush=True)
-        for symbol in MEME_SYMBOLS:
-            if not self._running:
-                break
+            print(f"[TICK #{self._tick_count}] looping {len(self._symbols)} symbols...", flush=True)
+
+        # Fetch all tickers concurrently
+        async def _fetch_one(symbol: str):
             try:
                 raw = await self._data_feed.fetch_ticker(symbol)
+                return symbol, raw, None
+            except Exception as e:
+                return symbol, None, e
+
+        results = await asyncio.gather(*[_fetch_one(s) for s in self._symbols])
+
+        # Fetch klines concurrently (staggered on first 2 ticks to warm up)
+        now = time_module.time()
+        kline_tasks = []
+        for i, symbol in enumerate(self._symbols):
+            last_fetch = self._last_kline_fetch.get(symbol, 0)
+            # Force initial kline fetch within first 3 ticks (staggered)
+            if self._tick_count <= 3 and last_fetch == 0:
+                self._last_kline_fetch[symbol] = now
+                kline_tasks.append(self._fetch_kline_for_symbol(symbol))
+            elif now - last_fetch >= self._kline_interval:
+                kline_tasks.append(self._fetch_kline_for_symbol(symbol))
+
+        if kline_tasks:
+            await asyncio.gather(*kline_tasks)
+
+        # Process signals sequentially (avoids race conditions on positions/balances)
+        for symbol, raw, err in results:
+            if not self._running:
+                break
+            if err is not None or raw is None:
+                continue
+            try:
                 current_vol = Decimal(str(raw.get('baseVolume', 0) or 0))
-
-                # Fetch kline data periodically for volume spike detection
-                now = time_module.time()
-                last_fetch = self._last_kline_fetch.get(symbol, 0)
-                if now - last_fetch > self._kline_interval:
-                    try:
-                        klines = await self._data_feed.fetch_ohlcv(symbol, "1m", limit=30)
-                        if klines:
-                            for k in klines:
-                                k_vol = Decimal(str(k[5]))
-                                self.strategy.update_kline_volume(symbol, k_vol)
-                            if self._tick_count <= 1:
-                                print(f"[KLINE] {symbol}: {len(klines)} candles, last vol={klines[-1][5]}", flush=True)
-                        self._last_kline_fetch[symbol] = now
-                    except Exception as e:
-                        if self._tick_count <= 5:
-                            print(f"[KLINE ERR] {symbol}: {type(e).__name__}: {str(e)[:100]}", flush=True)
-
                 ticker = Ticker(
                     symbol=symbol,
                     bid=Decimal(str(raw.get('bid', 0) or 0)),
@@ -625,10 +383,8 @@ class MemeBot:
                 signal = await self.strategy.on_ticker(ticker)
                 if signal:
                     await self._handle_signal(signal, ticker)
-
             except Exception:
                 continue
-            await asyncio.sleep(0.1)
 
         layout["header"].update(self.render_header())
         layout["positions"].update(self.render_positions_table())
@@ -639,8 +395,23 @@ class MemeBot:
         if not hasattr(self, '_last_hb') or now_ts - self._last_hb >= 60:
             self._last_hb = now_ts
             print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] HB | "
-                  f"trades={len(self.trades)} | symbols={len(MEME_SYMBOLS)}",
+                  f"trades={len(self.trades)} | symbols={len(self._symbols)}",
                   flush=True)
+
+    async def _fetch_kline_for_symbol(self, symbol: str) -> None:
+        """Fetch kline data for one symbol (used concurrently)."""
+        try:
+            klines = await self._data_feed.fetch_ohlcv(symbol, "1m", limit=30)
+            if klines:
+                for k in klines:
+                    k_vol = Decimal(str(k[5]))
+                    self.strategy.update_kline_volume(symbol, k_vol)
+                if self._tick_count <= 1:
+                    print(f"[KLINE] {symbol}: {len(klines)} candles, last vol={klines[-1][5]}", flush=True)
+            self._last_kline_fetch[symbol] = time_module.time()
+        except Exception as e:
+            if self._tick_count <= 5:
+                print(f"[KLINE ERR] {symbol}: {type(e).__name__}: {str(e)[:100]}", flush=True)
 
     async def _handle_signal(self, signal, ticker: Ticker) -> None:
         sig_type = signal.signal_type
@@ -654,6 +425,8 @@ class MemeBot:
 
         # Prevent duplicate entries
         if is_entry and self.strategy.is_in_position(signal.symbol):
+            logger.info("Signal rejected: already in position",
+                        extra={"symbol": signal.symbol, "direction": direction})
             return
 
         positions = await self.exchange.fetch_positions()
@@ -664,6 +437,9 @@ class MemeBot:
             signal=signal, positions=positions, balances=balances, equity=equity,
         )
         if not approved:
+            logger.info("Signal rejected by risk manager",
+                        extra={"symbol": signal.symbol, "reason": reason,
+                               "direction": direction, "type": sig_type.value})
             return
 
         price = signal.price
@@ -690,7 +466,7 @@ class MemeBot:
             entry_fee = fee_rate * price * actual_amount
             side_label = "long" if is_entry_long else "short"
 
-            self.strategy.record_entry(signal.symbol, price, side=side_label)
+            self.strategy.record_entry(signal.symbol, price, amount=actual_amount, side=side_label)
 
             self.open_positions[signal.symbol] = {
                 "entry_price": str(price),
@@ -792,7 +568,6 @@ class MemeBot:
             "expected_return_pct": f"{float(signal.expected_return_rate * 100):.2f}",
             "exit_reason": exit_reason,
             "pnl_pct": pnl_pct,
-            "pnl_display": locals().get("pnl_display", ""),
         }
         self.trades.append(trade_entry)
         self.trade_logger.log(**trade_entry)
@@ -869,9 +644,13 @@ def main() -> None:
     else:
         mode = MemeBot.MODE_OFFLINE
 
+    # Load symbols and profiles from config/meme.yaml
+    symbols, profiles = load_meme_config()
+
     capital = Decimal(str(args.capital))
     market_type = MarketType.FUTURE if args.futures else MarketType.SPOT
-    bot = MemeBot(mode=mode, capital=capital, proxy=args.proxy, market_type=market_type)
+    bot = MemeBot(mode=mode, capital=capital, proxy=args.proxy,
+                  market_type=market_type, symbols=symbols, profiles=profiles)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

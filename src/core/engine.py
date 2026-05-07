@@ -259,8 +259,10 @@ class TradingEngine:
             )
             self.portfolio.on_fill(fill, order)
 
-            # Update circuit breaker
-            self.circuit_breaker.update_equity(self.circuit_breaker.current_equity)
+            # Update circuit breaker with current equity
+            if hasattr(self.exchange, 'get_equity'):
+                equity = self.exchange.get_equity(self.config.market.quote_currency)
+                self.circuit_breaker.update_equity(equity)
 
             await self.event_bus.publish(EventType.ORDER, order=order)
 

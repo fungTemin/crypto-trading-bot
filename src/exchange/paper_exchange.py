@@ -93,8 +93,8 @@ class PaperExchange(ExchangeInterface):
         else:
             fill_price = price or ticker.bid
 
-        # Calculate fee
-        fee_rate = self._fee_schedule.taker
+        # Calculate fee (maker for limit, taker for market)
+        fee_rate = self._fee_schedule.maker if order_type == "limit" else self._fee_schedule.taker
         fee = amount * fill_price * fee_rate
 
         # Simulate fill

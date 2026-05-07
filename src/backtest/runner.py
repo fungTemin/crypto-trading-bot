@@ -240,14 +240,31 @@ class BacktestRunner:
                 max_dd = dd
         result.max_drawdown_pct = max_dd
 
-        # Win rate
+        # Win rate based on actual realized P&L from closed round-trips
         result.total_trades = len(self._trades)
-        for trade in self._trades:
-            net = Decimal(trade["net_expected_pct"].replace("%", ""))
-            if net > 0:
-                result.winning_trades += 1
-            else:
-                result.losing_trades += 1
+        fills = self.exchange.fills
+        # Match sell fills against preceding buy fills per symbol to compute realized P&L
+        buy_stack: dict[str, list] = {}  # symbol -> list of (price, amount)
+        for fill in fills:
+            if fill.side.value == "buy":
+                if fill.symbol not in buy_stack:
+                    buy_stack[fill.symbol] = []
+                buy_stack[fill.symbol].append((fill.price, fill.amount))
+            elif fill.side.value == "sell":
+                stack = buy_stack.get(fill.symbol, [])
+                if stack:
+                    entry_price, _ = stack.pop(0)
+                    realized_return = (fill.price - entry_price) / entry_price
+                    if realized_return > 0:
+                        result.winning_trades += 1
+                    else:
+                        result.losing_trades += 1
+
+        # Fallback: if no pair matching succeeded, use trade record side counts
+        if result.winning_trades == 0 and result.losing_trades == 0:
+            for trade in self._trades:
+                if trade.get("side") == "sell":
+                    result.losing_trades += 1  # conservative default
 
         if result.total_trades > 0:
             result.win_rate_pct = Decimal(result.winning_trades) / Decimal(result.total_trades) * 100

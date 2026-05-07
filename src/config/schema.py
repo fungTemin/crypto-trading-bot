@@ -51,12 +51,39 @@ class TrendFollowingConfig(BaseModel):
     atr_multiplier: float = Field(default=2.0, ge=0.5, le=10.0)
 
 
+class MemeScalperConfig(BaseModel):
+    min_volume_usdt: int = Field(default=100000, ge=0)
+    volume_spike_ratio: float = Field(default=1.2, ge=1.0)
+    momentum_lookback: int = Field(default=6, ge=2)
+    ema_period: int = Field(default=5, ge=2)
+    rsi_period: int = Field(default=8, ge=3)
+    rsi_entry_min: int = Field(default=35, ge=10, le=50)
+    rsi_entry_max: int = Field(default=65, ge=50, le=90)
+    rsi_short_min: int = Field(default=55, ge=40, le=80)
+    rsi_long_max: int = Field(default=65, ge=40, le=80)
+    take_profit_pct: float = Field(default=2.0, ge=0.1, le=100)
+    stop_loss_pct: float = Field(default=2.5, ge=0.1, le=100)
+    max_hold_minutes: int = Field(default=45, ge=1)
+    trailing_stop_pct: float = Field(default=1.0, ge=0.1, le=100)
+    kline_lookback: int = Field(default=20, ge=5)
+    base_order_usdt: float = Field(default=10, gt=0)
+    kline_interval: float = Field(default=60.0, ge=10)
+
+
+class SyntheticProfile(BaseModel):
+    base_price: float
+    volatility: float = 0.015
+    base_volume: int = 500_000
+
+
 class StrategyConfig(BaseModel):
     active: str = "grid"
     min_profit_buffer_pct: float = Field(default=0.05, ge=0.0)
     grid: GridConfig = GridConfig()
     mean_reversion: MeanReversionConfig = MeanReversionConfig()
     trend_following: TrendFollowingConfig = TrendFollowingConfig()
+    meme_scalper: MemeScalperConfig = MemeScalperConfig()
+    synthetic_profiles: dict[str, SyntheticProfile] = Field(default_factory=dict)
 
 
 class RiskConfig(BaseModel):

@@ -8,13 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from math import sqrt
 from typing import Optional
 
 
 def decimal_sqrt(value: Decimal) -> Decimal:
-    """Decimal square root using float conversion (adequate for price data)."""
-    return Decimal(str(sqrt(float(value))))
+    """Decimal square root using native method (Python 3.11+)."""
+    return value.sqrt()
 
 
 @dataclass
@@ -75,7 +74,7 @@ def ema_series(prices: list[Decimal], period: int) -> list[Optional[Decimal]]:
 
 
 def rsi(prices: list[Decimal], period: int = 14) -> Optional[Decimal]:
-    """Relative Strength Index."""
+    """Relative Strength Index (absolute price changes)."""
     if len(prices) < period + 1:
         return None
 
@@ -99,6 +98,38 @@ def rsi(prices: list[Decimal], period: int = 14) -> Optional[Decimal]:
 
     rs = avg_gain / avg_loss
     return Decimal("100") - (Decimal("100") / (Decimal("1") + rs))
+
+
+def rsi_pct(prices: list[Decimal], period: int = 14) -> Optional[float]:
+    """RSI using percentage changes — suitable for sub-penny prices (e.g. meme coins)."""
+    if len(prices) < period + 1:
+        return None
+    gains = []
+    losses = []
+    for i in range(-period, 0):
+        prev = float(prices[i - 1])
+        curr = float(prices[i])
+        if prev == 0:
+            continue
+        pct_change = ((curr - prev) / prev) * 100
+        if pct_change >= 0:
+            gains.append(pct_change)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(abs(pct_change))
+
+    if len(gains) == 0:
+        return None
+
+    avg_gain = sum(gains) / len(gains)
+    avg_loss = sum(losses) / len(losses)
+
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
 
 
 def bollinger_bands(prices: list[Decimal], period: int = 20, std_dev: float = 2.0) -> Optional[BollingerResult]:

@@ -39,7 +39,7 @@ class TestKlineVolumeDetection:
         # Relax RSI thresholds for testing — accept any RSI
         self.strategy = build_strategy(
             volume_spike_ratio=Decimal("2.0"),
-            rsi_entry_min=0,
+            rsi_long_min=0,
             rsi_long_max=100,
         )
         self.strategy.set_symbols(["PEPE/USDT"])
@@ -95,8 +95,8 @@ class TestShortSelling:
         self.strategy = build_strategy(
             market_type=MarketType.FUTURE,
             volume_spike_ratio=Decimal("2.0"),
-            rsi_entry_min=0, rsi_entry_max=100,
-            rsi_short_min=0,
+            rsi_long_min=0, rsi_long_max=100,
+            rsi_short_min=0, rsi_short_max=100,
         )
         self.strategy.set_symbols(["WIF/USDT"])
 
@@ -124,7 +124,7 @@ class TestShortSelling:
         ticker = make_ticker("WIF/USDT", last_p, Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
 
-        assert signal is not None, f"Should trigger SHORT. EMA={self.strategy._calc_ema(state.price_history, 5)} price={last_p}"
+        assert signal is not None, f"Should trigger SHORT. EMA={state.cached_ema} price={last_p}"
         assert signal.signal_type == SignalType.SELL_SHORT
         assert signal.order_side == OrderSide.SELL
 
@@ -150,7 +150,8 @@ class TestShortSelling:
         for _ in range(30):
             self.strategy.update_ticker_data("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
 
-        self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"), side="short")
+        self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"),
+                                   amount=Decimal("50"), side="short")
         # TP for short: entry * (1 - 2%) = 0.49
         ticker = make_ticker("WIF/USDT", Decimal("0.48900000"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
@@ -166,7 +167,8 @@ class TestShortSelling:
         for _ in range(30):
             self.strategy.update_ticker_data("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
 
-        self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"), side="short")
+        self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"),
+                                   amount=Decimal("50"), side="short")
         # SL for short: entry * (1 + 2.5%) = 0.5125
         ticker = make_ticker("WIF/USDT", Decimal("0.51300000"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
@@ -185,19 +187,22 @@ class TestLongExit:
     async def test_take_profit_exit(self) -> None:
         for _ in range(30):
             self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
-        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"), side="long")
+        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"),
+                                   amount=Decimal("1000000"), side="long")
         # TP: entry * 1.02 = 0.0000102
         ticker = make_ticker("PEPE/USDT", Decimal("0.00001030"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
         assert signal is not None
         assert signal.signal_type == SignalType.SELL_LONG
         assert signal.metadata["exit_reason"] == "take_profit"
+        assert signal.amount > 0  # exit signal must have non-zero amount
 
     @pytest.mark.asyncio
     async def test_stop_loss_exit(self) -> None:
         for _ in range(30):
             self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
-        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"), side="long")
+        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"),
+                                   amount=Decimal("1000000"), side="long")
         # SL: entry * 0.975 = 0.00000975
         ticker = make_ticker("PEPE/USDT", Decimal("0.00000970"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
@@ -208,12 +213,13 @@ class TestLongExit:
     async def test_trailing_stop_exit(self) -> None:
         for _ in range(30):
             self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
-        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"), side="long")
+        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"),
+                                   amount=Decimal("1000000"), side="long")
         # Price goes up to 0.00001015 (+1.5%, BELOW TP of +2% = 0.00001020)
         up_ticker = make_ticker("PEPE/USDT", Decimal("0.00001015"), Decimal("2000000"))
-        # No signal should fire (not at TP yet)
         signal1 = await self.strategy.compute_signal(up_ticker)
-        assert signal1 is None, f"Should not trigger at 1.5% gain, got {signal1.metadata.get('exit_reason') if signal1 else 'None'}"
+        assert signal1 is None, f"Should not trigger at 1.5% gain"
+
         # Price drops below trailing stop: high=0.00001015, trail=0.00001015*(1-0.01)=0.0000100485
         # 0.00001004 < 0.0000100485 → triggers trailing_stop
         down_ticker = make_ticker("PEPE/USDT", Decimal("0.00001004"), Decimal("2000000"))
@@ -223,23 +229,30 @@ class TestLongExit:
 
     @pytest.mark.asyncio
     async def test_no_signal_when_rsi_overbought(self) -> None:
-        """Long signal blocked when RSI is too high."""
+        """Long signal blocked when RSI is too high (above rsi_long_max=65)."""
         for _ in range(10):
             self.strategy.update_kline_volume("PEPE/USDT", Decimal("500000"))
         self.strategy.update_kline_volume("PEPE/USDT", Decimal("2000000"))  # spike
 
-        # Feed rapidly rising prices to create overbought RSI
+        # Default rsi_long_max=55 — feed rapidly rising prices to create high RSI
+        strat = build_strategy()  # uses defaults: rsi_long_min=35, rsi_long_max=55
+        strat.set_symbols(["PEPE/USDT"])
+        for _ in range(10):
+            strat.update_kline_volume("PEPE/USDT", Decimal("500000"))
+        strat.update_kline_volume("PEPE/USDT", Decimal("2000000"))  # spike
+
         base = Decimal("0.00001000")
         for i in range(30):
-            self.strategy.update_ticker_data("PEPE/USDT", base * (Decimal("1") + Decimal(str(i)) * Decimal("0.003")), Decimal("1000000"))
+            strat.update_ticker_data("PEPE/USDT", base * (Decimal("1") + Decimal(str(i)) * Decimal("0.003")), Decimal("1000000"))
 
         ticker = make_ticker("PEPE/USDT", base * Decimal("1.09"), Decimal("1000000"))
-        signal = await self.strategy.compute_signal(ticker)
-        assert signal is None  # RSI should be overbought
+        signal = await strat.compute_signal(ticker)
+        assert signal is None  # RSI should be overbought (>55)
 
     def test_record_entry_and_exit(self) -> None:
         assert not self.strategy.is_in_position("PEPE/USDT")
-        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"), side="long")
+        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"),
+                                   amount=Decimal("1000000"), side="long")
         assert self.strategy.is_in_position("PEPE/USDT")
         assert self.strategy.get_position_side("PEPE/USDT") == "long"
         self.strategy.record_exit("PEPE/USDT")
