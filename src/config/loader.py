@@ -88,13 +88,13 @@ def load_config(
     # Layer 1: defaults
     default_path = config_dir / "default.yaml"
     if default_path.exists():
-        with open(default_path) as f:
+        with open(default_path, encoding="utf-8") as f:
             merged = yaml.safe_load(f) or {}
 
     # Layer 2: mode-specific
     mode_path = config_dir / f"{mode}.yaml"
     if mode_path.exists():
-        with open(mode_path) as f:
+        with open(mode_path, encoding="utf-8") as f:
             mode_config = yaml.safe_load(f) or {}
         merged = _deep_merge(merged, mode_config)
 

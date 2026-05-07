@@ -103,8 +103,8 @@ class MemeBot:
         self.fee_calculator = FeeCalculator(fee_schedule=fs, min_profit_buffer=Decimal("0.0005"))
         self.event_bus = EventBus()
 
-        # 合约: $25/笔(预留$5给手续费), 现货: $10/笔
-        base_order = Decimal("25") if market_type == MarketType.FUTURE else Decimal("10")
+        # 合约: $25/笔(预留$5给手续费), 现货: $7/笔 (23% of $30, 允许3-4并发仓位)
+        base_order = Decimal("25") if market_type == MarketType.FUTURE else Decimal("7")
 
         self.strategy = MemeScalperStrategy(
             market_type=self.market_type, fee_calculator=self.fee_calculator,
@@ -146,6 +146,8 @@ class MemeBot:
         self.local_log = LocalTradeLogger("data/logs")
         self._last_kline_fetch: dict[str, float] = {}  # symbol -> last fetch timestamp
         self._kline_interval = 60.0  # fetch klines every 60s per symbol
+        self._exit_time: dict[str, float] = {}  # symbol -> last exit timestamp (for post-exit delay)
+        self._post_exit_delay = 60.0  # wait 1 kline (60s) before re-entry after exit
 
     # ---- Build UI ----
 
@@ -361,6 +363,9 @@ class MemeBot:
         if kline_tasks:
             await asyncio.gather(*kline_tasks)
 
+        # Update strategy equity for dynamic position sizing
+        self.strategy.current_equity = self.exchange.get_equity("USDT")
+
         # Process signals sequentially (avoids race conditions on positions/balances)
         for symbol, raw, err in results:
             if not self._running:
@@ -462,6 +467,15 @@ class MemeBot:
 
         # ==================== ENTRY ====================
         if is_entry:
+            # Post-exit delay: wait 1 kline (60s) before re-entry
+            last_exit = self._exit_time.get(signal.symbol, 0)
+            if last_exit > 0:
+                elapsed = time_module.time() - last_exit
+                if elapsed < self._post_exit_delay:
+                    logger.info("Entry rejected: post-exit delay",
+                                extra={"symbol": signal.symbol, "elapsed": f"{elapsed:.0f}s",
+                                       "required": f"{self._post_exit_delay:.0f}s"})
+                    return
             actual_amount = order.filled if order.filled > 0 else amount
             entry_fee = fee_rate * price * actual_amount
             side_label = "long" if is_entry_long else "short"
@@ -513,6 +527,7 @@ class MemeBot:
         # ==================== EXIT ====================
         if is_exit:
             self.strategy.record_exit(signal.symbol)
+            self._exit_time[signal.symbol] = time_module.time()  # Record exit time for post-exit delay
             pos_info = self.open_positions.pop(signal.symbol, {})
             entry_price = Decimal(str(pos_info.get("entry_price", 0)))
             pos_amount = Decimal(str(pos_info.get("amount", 0)))

@@ -137,6 +137,7 @@ class MemeScalperStrategy(BaseStrategy):
         self.kline_lookback = kline_lookback
 
         self._coins: dict[str, MemeCoinState] = {}
+        self.current_equity: Decimal = Decimal("0")  # Updated by bot runner each tick
 
     # -- Symbol registration --------------------------------------------------
 
@@ -281,9 +282,12 @@ class MemeScalperStrategy(BaseStrategy):
         tp_price = price * (Decimal("1") + self.take_profit_pct)
         expected_return = (tp_price - price) / price
 
-        # Position size: percentage of current equity (read from event bus context,
-        # defaulting to $10 for backward compatibility)
-        amount = self.base_order_usdt / price
+        # Dynamic position sizing: 25% of current equity per trade
+        if self.current_equity > 0:
+            order_usdt = self.current_equity * Decimal("0.25")
+        else:
+            order_usdt = self.base_order_usdt
+        amount = order_usdt / price
 
         return Signal(
             symbol=ticker.symbol,
@@ -346,7 +350,12 @@ class MemeScalperStrategy(BaseStrategy):
         tp_price = price * (Decimal("1") - self.take_profit_pct)
         expected_return = (price - tp_price) / price
 
-        amount = self.base_order_usdt / price
+        # Dynamic position sizing: 25% of current equity per trade
+        if self.current_equity > 0:
+            order_usdt = self.current_equity * Decimal("0.25")
+        else:
+            order_usdt = self.base_order_usdt
+        amount = order_usdt / price
 
         return Signal(
             symbol=ticker.symbol,
