@@ -34,8 +34,11 @@ backtest:
 paper:
 	. $(VENV) && TRADING_MODE=paper python -m src.main
 
+meme-offline:
+	. $(VENV) && python scripts/run_meme_bot.py --offline --capital 30
+
 meme-paper:
-	. $(VENV) && python scripts/run_meme_bot.py --capital 30
+	. $(VENV) && python scripts/run_meme_bot.py --paper --capital 30
 
 meme-live:
 	. $(VENV) && python scripts/run_meme_bot.py --live --capital 30
