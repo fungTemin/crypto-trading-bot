@@ -37,7 +37,7 @@ meme_scalper:
 
 risk:
   max_position_pct: 40         # 单币最大仓位 40% = $12
-  max_leverage: 1              # 现货无杠杆
+  max_leverage: 3              # 3倍合约杠杆
   max_daily_loss_pct: 15       # 日亏损上限 15% = $4.5
   max_drawdown_pct: 25         # 总回撤上限 25%
   cooldown_seconds: 30         # 同币冷却 30 秒

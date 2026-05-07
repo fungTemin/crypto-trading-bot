@@ -80,8 +80,11 @@ class MemeScalperStrategy(BaseStrategy):
         trailing_stop_pct: Decimal = Decimal("1"),
         # Kline
         kline_lookback: int = 20,
+        # Position sizing
+        base_order_usdt: Decimal = Decimal("10"),
     ) -> None:
         super().__init__("meme_scalper", market_type, fee_calculator, event_bus)
+        self.base_order_usdt = base_order_usdt  # USDT per trade (before leverage)
         self.min_volume_usdt = min_volume_usdt
         self.volume_spike_ratio = volume_spike_ratio
         self.momentum_lookback = momentum_lookback
@@ -206,7 +209,7 @@ class MemeScalperStrategy(BaseStrategy):
             return None
 
         # Position size for ~$10 on $30 account (40%)
-        amount = Decimal("10") / price
+        amount = self.base_order_usdt / price
 
         return Signal(
             symbol=ticker.symbol,
@@ -263,7 +266,7 @@ class MemeScalperStrategy(BaseStrategy):
         if rsi < self.rsi_short_min or rsi > self.rsi_entry_max:
             return None
 
-        amount = Decimal("10") / price
+        amount = self.base_order_usdt / price
 
         return Signal(
             symbol=ticker.symbol,

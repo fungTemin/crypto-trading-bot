@@ -293,6 +293,9 @@ class MemeBot:
         self.fee_calculator = FeeCalculator(fee_schedule=fs, min_profit_buffer=Decimal("0.0005"))
         self.event_bus = EventBus()
 
+        # 合约: $25/笔(预留$5给手续费), 现货: $10/笔
+        base_order = Decimal("25") if market_type == MarketType.FUTURE else Decimal("10")
+
         self.strategy = MemeScalperStrategy(
             market_type=self.market_type, fee_calculator=self.fee_calculator,
             event_bus=self.event_bus,
@@ -301,6 +304,7 @@ class MemeBot:
             rsi_entry_min=35, rsi_entry_max=65,
             take_profit_pct=Decimal("2"), stop_loss_pct=Decimal("2.5"),
             max_hold_minutes=45, trailing_stop_pct=Decimal("1"),
+            base_order_usdt=base_order,
         )
         self.strategy.set_symbols(MEME_SYMBOLS)
 
@@ -308,9 +312,18 @@ class MemeBot:
             initial_equity=capital, max_daily_loss_pct=Decimal("15"),
             max_drawdown_pct=Decimal("25"),
         )
+        # 合约模式: 3x杠杆, 仓位上限 = 40% × 3 = 120% 名义价值
+        # 现货模式: 1x, 仓位上限 = 40%
+        if market_type == MarketType.FUTURE:
+            leverage = 3
+            max_pos_pct = Decimal("120")  # $30 equity × 120% = $36 notional max
+        else:
+            leverage = 1
+            max_pos_pct = Decimal("40")
+
         self.risk_manager = RiskManager(
             circuit_breaker=self.circuit_breaker,
-            position_sizer=PositionSizer(max_position_pct=Decimal("40")),
+            position_sizer=PositionSizer(max_position_pct=max_pos_pct, max_leverage=leverage),
             max_concurrent_positions=3, cooldown_seconds=30,
         )
         self.trade_logger = TradeLogger("data/logs/meme_trades.csv")
