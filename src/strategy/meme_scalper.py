@@ -1,18 +1,18 @@
-"""Meme coin momentum scalping strategy.
+"""Meme coin momentum scalping strategy — long + short.
 
 Designed for small accounts ($30+) trading high-volatility meme coins
-on OKX spot market. Captures 1-3% price swings with strict risk controls.
+on OKX spot market. Uses kline-based volume detection for higher signal
+frequency than ticker-level 24h delta comparison.
 
-Key principles:
-    - Only trades coins with sufficient 24h volume (>$500k).
-    - Entry: volume spike + momentum confirmation + RSI not overbought.
-    - Exit: take profit (+2%), stop loss (-2.5%), or max hold time (45 min).
-    - Fee gate: 2% expected return easily covers 0.2% fees + 0.05% buffer.
+Entry signals:
+    LONG:  volume spike + price > EMA + RSI between entry_min and entry_max
+    SHORT: volume spike + price < EMA + RSI between entry_min and entry_max
 
-Based on $30 account:
-    - Max position per trade: $12 (40%)
-    - Target profit per trade: ~$0.22 (after fees)
-    - Max loss per trade: ~$0.30
+Exit signals:
+    LONG:  take_profit (+2%) / stop_loss (-2.5%) / trailing_stop (-1%) / max_hold (45 min)
+    SHORT: take_profit (-2%) / stop_loss (+2.5%) / trailing_stop (+1%) / max_hold (45 min)
+
+Fee gate: expected_return > entry_fee + exit_fee + slippage + min_profit_buffer
 """
 
 from __future__ import annotations
@@ -38,34 +38,48 @@ class MemeCoinState:
     symbol: str
     last_price: Decimal = Decimal("0")
     last_volume: Decimal = Decimal("0")
-    avg_volume: Decimal = Decimal("0")      # rolling average of volume
+    avg_volume: Decimal = Decimal("0")
     volume_history: list[Decimal] = field(default_factory=list)
     price_history: list[Decimal] = field(default_factory=list)
+    # Kline-based volume detection
+    kline_volumes: list[Decimal] = field(default_factory=list)   # recent kline volumes
+    kline_avg_volume: Decimal = Decimal("0")
+    # Position tracking
     in_position: bool = False
+    position_side: str = ""   # "long" or "short"
     entry_price: Decimal = Decimal("0")
     entry_time: float = 0
-    highest_price: Decimal = Decimal("0")    # for trailing stop
+    highest_price: Decimal = Decimal("0")   # for long trailing stop
+    lowest_price: Decimal = Decimal("0")    # for short trailing stop
 
 
 class MemeScalperStrategy(BaseStrategy):
-    """Meme coin momentum scalper for small accounts."""
+    """Meme coin momentum scalper — long + short with kline volume detection."""
 
     def __init__(
         self,
         market_type: MarketType,
         fee_calculator: FeeCalculator,
         event_bus,
+        # Volume filter
         min_volume_usdt: Decimal = Decimal("500000"),
         volume_spike_ratio: Decimal = Decimal("2.5"),
+        # Momentum
         momentum_lookback: int = 6,
         ema_period: int = 5,
+        # RSI
         rsi_period: int = 8,
-        rsi_entry_min: int = 35,
-        rsi_entry_max: int = 65,
+        rsi_entry_min: int = 35,    # below this = oversold (long entry zone)
+        rsi_entry_max: int = 65,    # above this = overbought (short entry zone)
+        rsi_short_min: int = 55,    # RSI min for short entry
+        rsi_long_max: int = 65,     # RSI max for long entry
+        # Exit parameters
         take_profit_pct: Decimal = Decimal("2"),
         stop_loss_pct: Decimal = Decimal("2.5"),
         max_hold_minutes: int = 45,
         trailing_stop_pct: Decimal = Decimal("1"),
+        # Kline
+        kline_lookback: int = 20,
     ) -> None:
         super().__init__("meme_scalper", market_type, fee_calculator, event_bus)
         self.min_volume_usdt = min_volume_usdt
@@ -75,10 +89,13 @@ class MemeScalperStrategy(BaseStrategy):
         self.rsi_period = rsi_period
         self.rsi_entry_min = rsi_entry_min
         self.rsi_entry_max = rsi_entry_max
+        self.rsi_short_min = rsi_short_min    # RSI must be > this to consider short
+        self.rsi_long_max = rsi_long_max       # RSI must be < this to consider long
         self.take_profit_pct = take_profit_pct / 100
         self.stop_loss_pct = stop_loss_pct / 100
         self.max_hold_seconds = max_hold_minutes * 60
         self.trailing_stop_pct = trailing_stop_pct / 100
+        self.kline_lookback = kline_lookback
 
         self._coins: dict[str, MemeCoinState] = {}
 
@@ -88,115 +105,119 @@ class MemeScalperStrategy(BaseStrategy):
             if sym not in self._coins:
                 self._coins[sym] = MemeCoinState(symbol=sym)
 
-    def update_state(self, symbol: str, price: Decimal, volume: Decimal) -> None:
-        """Update rolling state for a coin from incoming ticker data."""
+    # ---- Update kline data (called from bot runner each tick) ----
+
+    def update_kline_volume(self, symbol: str, volume: Decimal) -> None:
+        """Feed kline candle volume into the coin state for spike detection."""
+        if symbol not in self._coins:
+            return
+        state = self._coins[symbol]
+        state.kline_volumes.append(volume)
+        if len(state.kline_volumes) > self.kline_lookback:
+            state.kline_volumes.pop(0)
+        if state.kline_volumes:
+            state.kline_avg_volume = sum(state.kline_volumes) / len(state.kline_volumes)
+
+    def update_ticker_data(self, symbol: str, price: Decimal, volume_24h: Decimal) -> None:
+        """Update rolling price history from ticker data."""
         if symbol not in self._coins:
             self._coins[symbol] = MemeCoinState(symbol=symbol)
-
         state = self._coins[symbol]
         state.last_price = price
-        state.last_volume = volume
+        state.last_volume = volume_24h
 
-        # Rolling price history
         state.price_history.append(price)
         if len(state.price_history) > 100:
             state.price_history.pop(0)
 
-        # Rolling volume history
-        state.volume_history.append(volume)
-        if len(state.volume_history) > 50:
-            state.volume_history.pop(0)
+        # Track extremes for trailing stop
+        if state.in_position:
+            if state.position_side == "long" and price > state.highest_price:
+                state.highest_price = price
+            elif state.position_side == "short":
+                if state.lowest_price == Decimal("0") or price < state.lowest_price:
+                    state.lowest_price = price
 
-        # Average volume
-        if state.volume_history:
-            state.avg_volume = sum(state.volume_history) / len(state.volume_history)
+    # ---- Main signal computation ----
 
-        # Track highest price for trailing stop
-        if state.in_position and price > state.highest_price:
-            state.highest_price = price
-
-    def set_position(self, in_position: bool, entry_price: Decimal | None = None) -> None:
-        pass  # Per-coin state managed internally
+    def set_position_state(self, in_position: bool, side: str = "") -> None:
+        """Called by engine for compatibility (no-op, per-coin tracking used)."""
+        pass
 
     async def compute_signal(self, ticker: Ticker) -> Optional[Signal]:
-        """Evaluate whether to enter or exit a meme coin position.
+        """Evaluate entry or exit for a coin.
 
-        Returns:
-            Signal on entry/exit opportunity, or None.
+        Checks BOTH long and short signals. Returns the best opportunity.
+        Exit checks have priority over entries.
         """
         symbol = ticker.symbol
         price = ticker.last
-        volume = ticker.volume
+        volume_24h = ticker.volume
 
-        self.update_state(symbol, price, volume)
+        self.update_ticker_data(symbol, price, volume_24h)
         state = self._coins[symbol]
 
-        # --- Liquidity filter ---
-        if volume < self.min_volume_usdt:
+        # Liquidity filter (24h volume check)
+        if volume_24h < self.min_volume_usdt:
             return None
 
-        # --- Exit check (if in position) ---
+        # ---- Exit check first (if in position) ----
         if state.in_position:
             return self._check_exit(state, ticker)
 
-        # --- Entry check ---
-        return self._check_entry(state, ticker)
+        # ---- Entry checks ----
+        # Try long entry first, then short
+        signal = self._check_long_entry(state, ticker)
+        if signal is not None:
+            return signal
 
-    def _check_entry(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
-        """Determine if we should enter a position.
+        signal = self._check_short_entry(state, ticker)
+        return signal
 
-        Conditions:
-            1. Volume spike: current > avg * ratio
-            2. Price momentum: recent price change is positive
-            3. RSI not overbought
-            4. Passes fee gate
-        """
-        if len(state.price_history) < self.ema_period + 2:
+    # ============ LONG ENTRY ============
+
+    def _check_long_entry(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
+        """Long entry: volume spike + price > EMA + RSI not overbought + passes fee gate."""
+        if len(state.price_history) < self.ema_period + self.rsi_period + 2:
             return None
-        if len(state.volume_history) < 6:
+        if len(state.kline_volumes) < 6:
             return None
 
         price = ticker.last
 
-        # 1. Volume spike check
-        if state.avg_volume == 0:
+        # Kline volume spike check (primary signal source)
+        if state.kline_avg_volume == 0:
             return None
-        vol_ratio = state.last_volume / state.avg_volume
+        latest_kline_vol = state.kline_volumes[-1]
+        vol_ratio = latest_kline_vol / state.kline_avg_volume
         if vol_ratio < self.volume_spike_ratio:
             return None
 
-        # 2. Momentum: short-term EMA
+        # Price > EMA (uptrend)
         ema = self._calc_ema(state.price_history, self.ema_period)
-        if ema is None:
+        if ema is None or price <= ema:
             return None
-        if price <= ema:
-            return None  # Price must be above EMA
 
-        # 3. RSI check — don't chase overbought coins
+        # RSI: not overbought for long
         rsi = self._calc_rsi(state.price_history, self.rsi_period)
         if rsi is None:
             return None
-        rsi_dec = Decimal(str(rsi))
-        if rsi_dec < self.rsi_entry_min or rsi_dec > self.rsi_entry_max:
+        if rsi < self.rsi_entry_min or rsi > self.rsi_long_max:
             return None
 
-        # 4. Position size: $12 max for $30 account (40%)
-        amount = Decimal("0")  # Will be calculated by risk manager
-        # Default to ~$10 position for entry
+        # Position size for ~$10 on $30 account (40%)
         amount = Decimal("10") / price
-
-        # Expected return = take_profit target
-        expected_return = self.take_profit_pct
 
         return Signal(
             symbol=ticker.symbol,
             signal_type=SignalType.BUY_LONG,
             order_side=OrderSide.BUY,
-            order_type="market",  # Meme coins move fast, use market
+            order_type="market",
             price=price,
             amount=amount,
-            expected_return_rate=expected_return,
+            expected_return_rate=self.take_profit_pct,
             metadata={
+                "direction": "long",
                 "volume_ratio": str(vol_ratio),
                 "ema": str(ema),
                 "rsi": str(rsi),
@@ -204,86 +225,192 @@ class MemeScalperStrategy(BaseStrategy):
             },
         )
 
-    def _check_exit(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
-        """Check exit conditions.
+    # ============ SHORT ENTRY ============
 
-        1. Take profit: price >= entry * (1 + tp%)
-        2. Stop loss: price <= entry * (1 - sl%)
-        3. Trailing stop: price <= highest * (1 - trailing%)
-        4. Time stop: hold time > max_hold
+    def _check_short_entry(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
+        """Short entry: volume spike + price < EMA + RSI not oversold + passes fee gate.
+
+        On spot market, "short" = sell borrowed tokens. Assumes margin/spot-short available.
+        For pure spot without margin, short entries are skipped.
         """
+        if self.market_type == MarketType.SPOT:
+            return None  # Spot trading without margin: skip shorts
+
+        if len(state.price_history) < self.ema_period + self.rsi_period + 2:
+            return None
+        if len(state.kline_volumes) < 6:
+            return None
+
+        price = ticker.last
+
+        # Kline volume spike
+        if state.kline_avg_volume == 0:
+            return None
+        latest_kline_vol = state.kline_volumes[-1]
+        vol_ratio = latest_kline_vol / state.kline_avg_volume
+        if vol_ratio < self.volume_spike_ratio:
+            return None
+
+        # Price < EMA (downtrend)
+        ema = self._calc_ema(state.price_history, self.ema_period)
+        if ema is None or price >= ema:
+            return None
+
+        # RSI: not oversold for short (RSI should be somewhat elevated)
+        rsi = self._calc_rsi(state.price_history, self.rsi_period)
+        if rsi is None:
+            return None
+        if rsi < self.rsi_short_min or rsi > self.rsi_entry_max:
+            return None
+
+        amount = Decimal("10") / price
+
+        return Signal(
+            symbol=ticker.symbol,
+            signal_type=SignalType.SELL_SHORT,
+            order_side=OrderSide.SELL,
+            order_type="market",
+            price=price,
+            amount=amount,
+            expected_return_rate=self.take_profit_pct,  # 2% expected drop
+            metadata={
+                "direction": "short",
+                "volume_ratio": str(vol_ratio),
+                "ema": str(ema),
+                "rsi": str(rsi),
+                "strategy": "meme_scalper",
+            },
+        )
+
+    # ============ EXIT LOGIC ============
+
+    def _check_exit(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
+        """Check exit conditions for either long or short."""
+        if state.position_side == "long":
+            return self._check_long_exit(state, ticker)
+        elif state.position_side == "short":
+            return self._check_short_exit(state, ticker)
+        return None
+
+    def _check_long_exit(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
+        """Exit long: TP / SL / trailing stop / time stop."""
         price = ticker.last
         entry = state.entry_price
 
-        # Take profit
+        # Take profit (price rises to target)
         tp_price = entry * (Decimal("1") + self.take_profit_pct)
         if price >= tp_price:
-            return self._build_exit_signal(state, ticker, "take_profit")
+            return self._build_exit_signal(state, ticker, "take_profit", SignalType.SELL_LONG, OrderSide.SELL)
 
-        # Stop loss
+        # Stop loss (price drops to threshold)
         sl_price = entry * (Decimal("1") - self.stop_loss_pct)
         if price <= sl_price:
-            return self._build_exit_signal(state, ticker, "stop_loss")
+            return self._build_exit_signal(state, ticker, "stop_loss", SignalType.SELL_LONG, OrderSide.SELL)
 
         # Trailing stop
         if state.highest_price > entry:
             trail_price = state.highest_price * (Decimal("1") - self.trailing_stop_pct)
             if price <= trail_price:
-                return self._build_exit_signal(state, ticker, "trailing_stop")
+                return self._build_exit_signal(state, ticker, "trailing_stop", SignalType.SELL_LONG, OrderSide.SELL)
 
         # Time stop
         if state.entry_time > 0:
             held = time.time() - state.entry_time
             if held > self.max_hold_seconds:
-                return self._build_exit_signal(state, ticker, "time_stop")
+                return self._build_exit_signal(state, ticker, "time_stop", SignalType.SELL_LONG, OrderSide.SELL)
 
         return None
 
-    def _build_exit_signal(self, state: MemeCoinState, ticker: Ticker, reason: str) -> Signal:
+    def _check_short_exit(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
+        """Exit short: TP (price drops) / SL (price rises) / trailing stop / time."""
+        price = ticker.last
+        entry = state.entry_price
+
+        # Take profit (price drops to target: entry * (1 - tp%))
+        tp_price = entry * (Decimal("1") - self.take_profit_pct)
+        if price <= tp_price:
+            return self._build_exit_signal(state, ticker, "take_profit", SignalType.BUY_SHORT, OrderSide.BUY)
+
+        # Stop loss (price rises to threshold: entry * (1 + sl%))
+        sl_price = entry * (Decimal("1") + self.stop_loss_pct)
+        if price >= sl_price:
+            return self._build_exit_signal(state, ticker, "stop_loss", SignalType.BUY_SHORT, OrderSide.BUY)
+
+        # Trailing stop (for shorts: price rises from lowest point)
+        if state.lowest_price > Decimal("0") and state.lowest_price < entry:
+            trail_price = state.lowest_price * (Decimal("1") + self.trailing_stop_pct)
+            if price >= trail_price:
+                return self._build_exit_signal(state, ticker, "trailing_stop", SignalType.BUY_SHORT, OrderSide.BUY)
+
+        # Time stop
+        if state.entry_time > 0:
+            held = time.time() - state.entry_time
+            if held > self.max_hold_seconds:
+                return self._build_exit_signal(state, ticker, "time_stop", SignalType.BUY_SHORT, OrderSide.BUY)
+
+        return None
+
+    def _build_exit_signal(self, state: MemeCoinState, ticker: Ticker,
+                           reason: str, signal_type: SignalType,
+                           order_side: OrderSide) -> Signal:
         """Create an exit signal."""
         price = ticker.last
         entry = state.entry_price
-        expected_return = (price - entry) / entry if entry > 0 else Decimal("0")
+
+        if state.position_side == "long":
+            expected_return = (price - entry) / entry if entry > 0 else Decimal("0")
+        else:  # short
+            expected_return = (entry - price) / entry if entry > 0 else Decimal("0")
 
         return Signal(
             symbol=ticker.symbol,
-            signal_type=SignalType.SELL_LONG,
-            order_side=OrderSide.SELL,
+            signal_type=signal_type,
+            order_side=order_side,
             order_type="market",
             price=price,
             amount=Decimal("0"),  # close full position
             expected_return_rate=expected_return,
             metadata={
                 "exit_reason": reason,
+                "direction": state.position_side,
                 "entry_price": str(entry),
                 "exit_price": str(price),
                 "pnl_pct": str(expected_return * 100),
             },
         )
 
-    def record_entry(self, symbol: str, price: Decimal) -> None:
-        """Record that we entered a position."""
+    # ---- Position tracking (called by bot runner) ----
+
+    def record_entry(self, symbol: str, price: Decimal, side: str = "long") -> None:
         if symbol in self._coins:
             state = self._coins[symbol]
             state.in_position = True
+            state.position_side = side
             state.entry_price = price
             state.entry_time = time.time()
             state.highest_price = price
+            state.lowest_price = price
 
     def record_exit(self, symbol: str) -> None:
-        """Record that we exited a position."""
         if symbol in self._coins:
             state = self._coins[symbol]
             state.in_position = False
+            state.position_side = ""
             state.entry_price = Decimal("0")
             state.entry_time = 0
             state.highest_price = Decimal("0")
+            state.lowest_price = Decimal("0")
 
     def is_in_position(self, symbol: str) -> bool:
         state = self._coins.get(symbol)
         return state.in_position if state else False
 
-    # --- Indicator helpers ---
+    def get_position_side(self, symbol: str) -> str:
+        state = self._coins.get(symbol)
+        return state.position_side if state else ""
+
+    # ---- Indicator helpers ----
+
     @staticmethod
     def _calc_ema(prices: list[Decimal], period: int) -> Optional[Decimal]:
         if len(prices) < period:
@@ -307,7 +434,7 @@ class MemeScalperStrategy(BaseStrategy):
             curr = float(prices[i])
             if prev == 0:
                 continue
-            pct_change = ((curr - prev) / prev) * 100  # percentage change
+            pct_change = ((curr - prev) / prev) * 100
             if pct_change >= 0:
                 gains.append(pct_change)
                 losses.append(0.0)

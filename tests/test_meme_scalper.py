@@ -1,4 +1,4 @@
-"""Tests for meme coin scalping strategy."""
+"""Tests for meme coin scalping strategy — long, short, kline volume."""
 
 from __future__ import annotations
 
@@ -16,138 +16,231 @@ from src.strategy.meme_scalper import MemeScalperStrategy
 def make_ticker(symbol: str, price: Decimal, volume: Decimal) -> Ticker:
     spread = price * Decimal("0.0001")
     return Ticker(
-        symbol=symbol,
-        bid=price - spread,
-        ask=price + spread,
-        last=price,
-        high=price * Decimal("1.005"),
-        low=price * Decimal("0.995"),
-        volume=volume,
+        symbol=symbol, bid=price - spread, ask=price + spread, last=price,
+        high=price * Decimal("1.005"), low=price * Decimal("0.995"), volume=volume,
     )
 
 
-class TestMemeScalperStrategy:
+def make_fee_calc() -> FeeCalculator:
+    return FeeCalculator(fee_schedule=FeeSchedule.spot(), min_profit_buffer=Decimal("0.0005"))
+
+
+def build_strategy(market_type=MarketType.SPOT, **kwargs) -> MemeScalperStrategy:
+    return MemeScalperStrategy(
+        market_type=market_type, fee_calculator=make_fee_calc(),
+        event_bus=EventBus(), **kwargs,
+    )
+
+
+class TestKlineVolumeDetection:
+    """Verify kline-based volume spike detection triggers signals."""
+
     def setup_method(self) -> None:
-        self.fee_calc = FeeCalculator(
-            fee_schedule=FeeSchedule.spot(),
-            min_profit_buffer=Decimal("0.0005"),
+        # Relax RSI thresholds for testing — accept any RSI
+        self.strategy = build_strategy(
+            volume_spike_ratio=Decimal("2.0"),
+            rsi_entry_min=0,
+            rsi_long_max=100,
         )
-        self.event_bus = EventBus()
-        self.strategy = MemeScalperStrategy(
-            market_type=MarketType.SPOT,
-            fee_calculator=self.fee_calc,
-            event_bus=self.event_bus,
-        )
-        self.strategy.set_symbols(["PEPE/USDT", "WIF/USDT"])
+        self.strategy.set_symbols(["PEPE/USDT"])
 
     @pytest.mark.asyncio
-    async def test_no_signal_without_volume_history(self) -> None:
-        ticker = make_ticker("PEPE/USDT", Decimal("0.00001000"), Decimal("500000"))
+    async def test_no_signal_without_kline_data(self) -> None:
+        # No kline data fed — no signal
+        for _ in range(20):
+            self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001"), Decimal("1000000"))
+        ticker = make_ticker("PEPE/USDT", Decimal("0.00001"), Decimal("1000000"))
         signal = await self.strategy.compute_signal(ticker)
-        assert signal is None  # Not enough history
+        assert signal is None
 
     @pytest.mark.asyncio
-    async def test_no_signal_below_volume_threshold(self) -> None:
-        # Fill price/volume history with quiet data
-        for _ in range(30):
-            self.strategy.update_state(
-                "PEPE/USDT", Decimal("0.00001000"), Decimal("100000")
-            )
+    async def test_buy_signal_on_kline_volume_spike(self) -> None:
+        # Feed kline history: average ~500k, then a big spike
+        for _ in range(10):
+            self.strategy.update_kline_volume("PEPE/USDT", Decimal("500000"))
+        self.strategy.update_kline_volume("PEPE/USDT", Decimal("5000000"))  # 10x spike
 
-        ticker = make_ticker("PEPE/USDT", Decimal("0.00001000"), Decimal("100000"))
-        signal = await self.strategy.compute_signal(ticker)
-        assert signal is None  # Volume too low (< $500k)
-
-    @pytest.mark.asyncio
-    async def test_no_signal_when_rsi_overbought(self) -> None:
-        # Fill with rising prices to create high RSI
+        # Feed price history — uptrend
         base = Decimal("0.00001000")
         for i in range(30):
-            price = base * (Decimal("1") + Decimal(str(i)) * Decimal("0.001"))
-            self.strategy.update_state("PEPE/USDT", price, Decimal("2000000"))
+            self.strategy.update_ticker_data(
+                "PEPE/USDT",
+                base * (Decimal("1") + Decimal(str(i)) * Decimal("0.0005")),
+                Decimal("1000000"),
+            )
 
-        # Now volume spike at overbought
-        ticker = make_ticker(
-            "PEPE/USDT", Decimal("0.00001300"), Decimal("5000000")  # 5M volume = spike
-        )
+        ticker = make_ticker("PEPE/USDT", base * Decimal("1.015"), Decimal("1000000"))
         signal = await self.strategy.compute_signal(ticker)
-        assert signal is None  # RSI should be overbought
+        assert signal is not None, "Should trigger BUY on volume spike + uptrend"
+        assert signal.signal_type == SignalType.BUY_LONG
+        assert signal.order_side == OrderSide.BUY
+
+    @pytest.mark.asyncio
+    async def test_no_signal_when_volume_below_threshold(self) -> None:
+        # Feed klines with steady volume — no spike
+        for _ in range(15):
+            self.strategy.update_kline_volume("PEPE/USDT", Decimal("500000"))
+            self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001"), Decimal("1000000"))
+
+        ticker = make_ticker("PEPE/USDT", Decimal("0.00001005"), Decimal("1000000"))
+        signal = await self.strategy.compute_signal(ticker)
+        assert signal is None  # no volume spike
+
+
+class TestShortSelling:
+    """Verify short-selling entry and exit logic."""
+
+    def setup_method(self) -> None:
+        # Use FUTURE market type to enable shorts, accept any RSI for test
+        self.strategy = build_strategy(
+            market_type=MarketType.FUTURE,
+            volume_spike_ratio=Decimal("2.0"),
+            rsi_entry_min=0, rsi_entry_max=100,
+            rsi_short_min=0,
+        )
+        self.strategy.set_symbols(["WIF/USDT"])
+
+    def _feed_downtrend_with_spike(self) -> None:
+        """Feed kline volume spike + downtrend price data for short setup."""
+        for _ in range(10):
+            self.strategy.update_kline_volume("WIF/USDT", Decimal("500000"))
+        self.strategy.update_kline_volume("WIF/USDT", Decimal("5000000"))  # 10x spike
+
+        # Steady downtrend
+        base = Decimal("0.50000000")
+        for i in range(30):
+            self.strategy.update_ticker_data(
+                "WIF/USDT",
+                base * (Decimal("1") - Decimal(str(i)) * Decimal("0.001")),
+                Decimal("2000000"),
+            )
+
+    @pytest.mark.asyncio
+    async def test_short_entry_on_downtrend_volume_spike(self) -> None:
+        self._feed_downtrend_with_spike()
+        # Use a price that continues the downtrend (below EMA)
+        state = self.strategy._coins["WIF/USDT"]
+        last_p = state.last_price
+        ticker = make_ticker("WIF/USDT", last_p, Decimal("2000000"))
+        signal = await self.strategy.compute_signal(ticker)
+
+        assert signal is not None, f"Should trigger SHORT. EMA={self.strategy._calc_ema(state.price_history, 5)} price={last_p}"
+        assert signal.signal_type == SignalType.SELL_SHORT
+        assert signal.order_side == OrderSide.SELL
+
+    @pytest.mark.asyncio
+    async def test_no_short_in_spot_mode(self) -> None:
+        """Short signals are disabled for spot market."""
+        spot_strategy = build_strategy(market_type=MarketType.SPOT,
+                                       volume_spike_ratio=Decimal("2.0"))
+        spot_strategy.set_symbols(["WIF/USDT"])
+
+        self.strategy = spot_strategy
+        self._feed_downtrend_with_spike()
+
+        ticker = make_ticker("WIF/USDT", Decimal("0.49200000"), Decimal("2000000"))
+        signal = await self.strategy.compute_signal(ticker)
+        # Should be None because spot mode skips shorts
+        assert signal is None or signal.signal_type != SignalType.SELL_SHORT
+
+    @pytest.mark.asyncio
+    async def test_short_take_profit_exit(self) -> None:
+        """Short exit: price drops to take-profit level."""
+        self.strategy.update_ticker_data("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
+        for _ in range(30):
+            self.strategy.update_ticker_data("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
+
+        self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"), side="short")
+        # TP for short: entry * (1 - 2%) = 0.49
+        ticker = make_ticker("WIF/USDT", Decimal("0.48900000"), Decimal("2000000"))
+        signal = await self.strategy.compute_signal(ticker)
+
+        assert signal is not None
+        assert signal.signal_type == SignalType.BUY_SHORT  # buy to cover
+        assert signal.metadata["exit_reason"] == "take_profit"
+
+    @pytest.mark.asyncio
+    async def test_short_stop_loss_exit(self) -> None:
+        """Short exit: price rises to stop-loss level."""
+        self.strategy.update_ticker_data("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
+        for _ in range(30):
+            self.strategy.update_ticker_data("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
+
+        self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"), side="short")
+        # SL for short: entry * (1 + 2.5%) = 0.5125
+        ticker = make_ticker("WIF/USDT", Decimal("0.51300000"), Decimal("2000000"))
+        signal = await self.strategy.compute_signal(ticker)
+
+        assert signal is not None
+        assert signal.signal_type == SignalType.BUY_SHORT
+        assert signal.metadata["exit_reason"] == "stop_loss"
+
+
+class TestLongExit:
+    def setup_method(self) -> None:
+        self.strategy = build_strategy()
+        self.strategy.set_symbols(["PEPE/USDT"])
 
     @pytest.mark.asyncio
     async def test_take_profit_exit(self) -> None:
-        """Verify take profit triggers exit when price rises enough."""
-        # Set up entry
-        self.strategy.update_state("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
-        # Fill enough history
         for _ in range(30):
-            self.strategy.update_state("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
-
-        # Record entry
-        self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"))
-
-        # Price goes up 3% (above 2% take profit)
-        ticker = make_ticker("WIF/USDT", Decimal("0.51500000"), Decimal("2000000"))
+            self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
+        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"), side="long")
+        # TP: entry * 1.02 = 0.0000102
+        ticker = make_ticker("PEPE/USDT", Decimal("0.00001030"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
-
         assert signal is not None
         assert signal.signal_type == SignalType.SELL_LONG
         assert signal.metadata["exit_reason"] == "take_profit"
 
     @pytest.mark.asyncio
     async def test_stop_loss_exit(self) -> None:
-        """Verify stop loss triggers exit when price drops enough."""
-        self.strategy.update_state("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
         for _ in range(30):
-            self.strategy.update_state("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
-
-        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"))
-
-        # Price drops 3% (below 2.5% stop loss)
+            self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
+        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"), side="long")
+        # SL: entry * 0.975 = 0.00000975
         ticker = make_ticker("PEPE/USDT", Decimal("0.00000970"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
-
         assert signal is not None
-        assert signal.signal_type == SignalType.SELL_LONG
         assert signal.metadata["exit_reason"] == "stop_loss"
 
     @pytest.mark.asyncio
     async def test_trailing_stop_exit(self) -> None:
-        """Verify trailing stop triggers when price retraces."""
-        self.strategy.update_state("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
         for _ in range(30):
-            self.strategy.update_state("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
-
-        self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"))
-
-        # Price goes up 2.5% (sets highest)
-        up_ticker = make_ticker("WIF/USDT", Decimal("0.51250000"), Decimal("2000000"))
-        await self.strategy.compute_signal(up_ticker)  # updates highest_price
-
-        # Price drops 1.5% from highest (0.5125 * 0.985 = 0.5048)
-        down_ticker = make_ticker("WIF/USDT", Decimal("0.50400000"), Decimal("2000000"))
+            self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
+        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"), side="long")
+        # Price goes up to 0.00001015 (+1.5%, BELOW TP of +2% = 0.00001020)
+        up_ticker = make_ticker("PEPE/USDT", Decimal("0.00001015"), Decimal("2000000"))
+        # No signal should fire (not at TP yet)
+        signal1 = await self.strategy.compute_signal(up_ticker)
+        assert signal1 is None, f"Should not trigger at 1.5% gain, got {signal1.metadata.get('exit_reason') if signal1 else 'None'}"
+        # Price drops below trailing stop: high=0.00001015, trail=0.00001015*(1-0.01)=0.0000100485
+        # 0.00001004 < 0.0000100485 → triggers trailing_stop
+        down_ticker = make_ticker("PEPE/USDT", Decimal("0.00001004"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(down_ticker)
-
         assert signal is not None
-        assert signal.signal_type == SignalType.SELL_LONG
         assert signal.metadata["exit_reason"] == "trailing_stop"
 
     @pytest.mark.asyncio
-    async def test_record_entry_and_exit(self) -> None:
-        """Test internal position tracking."""
+    async def test_no_signal_when_rsi_overbought(self) -> None:
+        """Long signal blocked when RSI is too high."""
+        for _ in range(10):
+            self.strategy.update_kline_volume("PEPE/USDT", Decimal("500000"))
+        self.strategy.update_kline_volume("PEPE/USDT", Decimal("2000000"))  # spike
+
+        # Feed rapidly rising prices to create overbought RSI
+        base = Decimal("0.00001000")
+        for i in range(30):
+            self.strategy.update_ticker_data("PEPE/USDT", base * (Decimal("1") + Decimal(str(i)) * Decimal("0.003")), Decimal("1000000"))
+
+        ticker = make_ticker("PEPE/USDT", base * Decimal("1.09"), Decimal("1000000"))
+        signal = await self.strategy.compute_signal(ticker)
+        assert signal is None  # RSI should be overbought
+
+    def test_record_entry_and_exit(self) -> None:
         assert not self.strategy.is_in_position("PEPE/USDT")
-
-        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"))
+        self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"), side="long")
         assert self.strategy.is_in_position("PEPE/USDT")
-
+        assert self.strategy.get_position_side("PEPE/USDT") == "long"
         self.strategy.record_exit("PEPE/USDT")
         assert not self.strategy.is_in_position("PEPE/USDT")
-
-    def test_volume_spike_detection(self) -> None:
-        """Test volume spike calculation."""
-        # Fill with steady volume
-        for _ in range(20):
-            self.strategy.update_state("PEPE/USDT", Decimal("0.00001000"), Decimal("1000000"))
-
-        assert len(self.strategy._coins["PEPE/USDT"].volume_history) == 20
-        avg = self.strategy._coins["PEPE/USDT"].avg_volume
-        assert avg == Decimal("1000000")

@@ -30,7 +30,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.layout import Layout
 
-from src.core.constants import MarketType, OrderSide
+from src.core.constants import MarketType, OrderSide, SignalType
 from src.core.event_bus import EventBus
 from src.exchange.models import Ticker
 from src.exchange.paper_exchange import PaperExchange
@@ -319,6 +319,8 @@ class MemeBot:
         self._data_feed = None
         self._prev_volumes: dict[str, Decimal] = {}
         self.local_log = LocalTradeLogger("data/logs")
+        self._last_kline_fetch: dict[str, float] = {}  # symbol -> last fetch timestamp
+        self._kline_interval = 60.0  # fetch klines every 60s per symbol
 
     # ---- Build UI ----
 
@@ -389,18 +391,31 @@ class MemeBot:
             if state.in_position and position_info:
                 entry = Decimal(str(position_info["entry_price"]))
                 entry_str = format_price(entry)
-                float_pnl = state.last_price - entry
-                float_pnl_pct = (float_pnl / entry * 100) if entry > 0 else Decimal("0")
-                side_str = "[green]LONG[/green]"
-                pnl_str = format_pnl(float_pnl * 10, float_pnl_pct)  # approximate for small amount
-                # More accurate P&L using actual position
+                pos_side = position_info.get("side", state.position_side)
                 pos_amount = Decimal(str(position_info.get("amount", 0)))
-                if pos_amount > 0:
-                    pos_value = pos_amount * state.last_price
-                    entry_value = pos_amount * entry
-                    actual_pnl = pos_value - entry_value
-                    actual_pnl_pct = ((actual_pnl) / entry_value * 100) if entry_value > 0 else Decimal("0")
-                    pnl_str = format_pnl(actual_pnl, actual_pnl_pct)
+
+                # P&L differs for long vs short
+                if pos_side == "short":
+                    side_str = "[red]SHORT[/red]"
+                    if pos_amount > 0:
+                        pos_value = pos_amount * state.last_price
+                        entry_value = pos_amount * entry
+                        # For short: profit when price drops
+                        actual_pnl = entry_value - pos_value
+                        actual_pnl_pct = (actual_pnl / entry_value * 100) if entry_value > 0 else Decimal("0")
+                        pnl_str = format_pnl(actual_pnl, actual_pnl_pct)
+                    else:
+                        pnl_str = "—"
+                else:
+                    side_str = "[green]LONG[/green]"
+                    if pos_amount > 0:
+                        pos_value = pos_amount * state.last_price
+                        entry_value = pos_amount * entry
+                        actual_pnl = pos_value - entry_value
+                        actual_pnl_pct = (actual_pnl / entry_value * 100) if entry_value > 0 else Decimal("0")
+                        pnl_str = format_pnl(actual_pnl, actual_pnl_pct)
+                    else:
+                        pnl_str = "—"
 
                 signal_info = position_info.get("signal", "")
                 table.add_row(sym, price_str, vol_str, rsi_str, side_str, entry_str, pnl_str, signal_info)
@@ -495,13 +510,22 @@ class MemeBot:
             try:
                 raw = await self._data_feed.fetch_ticker(symbol)
                 current_vol = Decimal(str(raw.get('baseVolume', 0) or 0))
-                vol_delta = current_vol
-                prev_vol = self._prev_volumes.get(symbol)
-                if prev_vol is not None and prev_vol > 0:
-                    vol_delta = current_vol - prev_vol
-                    if vol_delta < 0:
-                        vol_delta = current_vol
-                self._prev_volumes[symbol] = current_vol
+
+                # Fetch kline data periodically for volume spike detection
+                now = time_module.time()
+                last_fetch = self._last_kline_fetch.get(symbol, 0)
+                if now - last_fetch > self._kline_interval:
+                    try:
+                        klines = await self._data_feed.fetch_ohlcv(symbol, "1m", limit=30)
+                        if klines:
+                            # Each kline: [timestamp, open, high, low, close, volume]
+                            # Feed each candle's volume to the strategy
+                            for k in klines:
+                                k_vol = Decimal(str(k[5]))  # volume is index 5
+                                self.strategy.update_kline_volume(symbol, k_vol)
+                        self._last_kline_fetch[symbol] = now
+                    except Exception:
+                        pass  # kline fetch is optional
 
                 ticker = Ticker(
                     symbol=symbol,
@@ -510,7 +534,7 @@ class MemeBot:
                     last=Decimal(str(raw.get('last', 0) or 0)),
                     high=Decimal(str(raw.get('high', 0) or 0)),
                     low=Decimal(str(raw.get('low', 0) or 0)),
-                    volume=vol_delta,
+                    volume=current_vol,
                 )
                 self.exchange.set_ticker(ticker)
 
@@ -527,9 +551,17 @@ class MemeBot:
         layout["trades"].update(self.render_trade_log())
 
     async def _handle_signal(self, signal, ticker: Ticker) -> None:
-        is_buy = signal.order_side == OrderSide.BUY
+        sig_type = signal.signal_type
+        direction = signal.metadata.get("direction", "long")
+        is_entry_long = sig_type == SignalType.BUY_LONG
+        is_entry_short = sig_type == SignalType.SELL_SHORT
+        is_exit_long = sig_type == SignalType.SELL_LONG
+        is_exit_short = sig_type == SignalType.BUY_SHORT
+        is_entry = is_entry_long or is_entry_short
+        is_exit = is_exit_long or is_exit_short
 
-        if is_buy and self.strategy.is_in_position(signal.symbol):
+        # Prevent duplicate entries
+        if is_entry and self.strategy.is_in_position(signal.symbol):
             return
 
         positions = await self.exchange.fetch_positions()
@@ -556,85 +588,100 @@ class MemeBot:
 
         exit_reason = signal.metadata.get("exit_reason", "")
         pnl_pct = signal.metadata.get("pnl_pct", "")
+        fee_rate = Decimal("0.001")
+        if self.exchange._fee_schedule:
+            fee_rate = self.exchange._fee_schedule.taker
 
-        if is_buy:
-            # ---- ENTRY ----
-            self.strategy.record_entry(signal.symbol, price)
+        # ==================== ENTRY ====================
+        if is_entry:
             actual_amount = order.filled if order.filled > 0 else amount
-            fee_rate = Decimal("0.001")
-            if self.exchange._fee_schedule:
-                fee_rate = self.exchange._fee_schedule.taker
             entry_fee = fee_rate * price * actual_amount
+            side_label = "long" if is_entry_long else "short"
+
+            self.strategy.record_entry(signal.symbol, price, side=side_label)
 
             self.open_positions[signal.symbol] = {
                 "entry_price": str(price),
                 "amount": str(actual_amount),
+                "side": side_label,
                 "entry_time": datetime.now(timezone.utc).isoformat(),
                 "signal": "vol_brk",
                 "fee": str(entry_fee),
                 "expected_return": f"{float(signal.expected_return_rate * 100):.2f}%",
             }
-            pnl_display = ""
 
-            # Write to local log file
             self.local_log.log_entry(
                 symbol=signal.symbol, price=price, amount=actual_amount,
                 expected_return=f"{float(signal.expected_return_rate * 100):.2f}%",
                 fee=entry_fee,
             )
 
-            console.print(
-                f"[bold green]▶ BUY[/bold green]  {signal.symbol}  "
-                f"@ {format_price(price)}  "
-                f"amount={float(actual_amount):.6f}  "
-                f"expected_return={float(signal.expected_return_rate * 100):.2f}%  "
-                f"fee=${float(entry_fee):.4f}"
-            )
-        else:
-            # ---- EXIT ----
+            if is_entry_long:
+                console.print(
+                    f"[bold green]▶ BUY (LONG)[/bold green]  {signal.symbol}  "
+                    f"@ {format_price(price)}  "
+                    f"amount={float(actual_amount):.6f}  "
+                    f"exp_ret=+{float(signal.expected_return_rate * 100):.2f}%  "
+                    f"fee=${float(entry_fee):.4f}"
+                )
+            else:
+                console.print(
+                    f"[bold red]▼ SELL (SHORT)[/bold red]  {signal.symbol}  "
+                    f"@ {format_price(price)}  "
+                    f"amount={float(actual_amount):.6f}  "
+                    f"exp_ret=+{float(signal.expected_return_rate * 100):.2f}%  "
+                    f"fee=${float(entry_fee):.4f}"
+                )
+            return
+
+        # ==================== EXIT ====================
+        if is_exit:
             self.strategy.record_exit(signal.symbol)
             pos_info = self.open_positions.pop(signal.symbol, {})
             entry_price = Decimal(str(pos_info.get("entry_price", 0)))
             pos_amount = Decimal(str(pos_info.get("amount", 0)))
+            pos_side = pos_info.get("side", "long")
 
             if entry_price > 0 and pos_amount > 0:
                 exit_value = price * pos_amount
                 entry_value = entry_price * pos_amount
-                realized_pnl = exit_value - entry_value
+
+                if pos_side == "short":
+                    # Short: profit = entry_value - exit_value (price dropped)
+                    gross_pnl = entry_value - exit_value
+                else:
+                    # Long: profit = exit_value - entry_value (price rose)
+                    gross_pnl = exit_value - entry_value
+
                 entry_fee = Decimal(str(pos_info.get("fee", 0)))
-                exit_fee = self.exchange._fee_schedule.taker * price * pos_amount if self.exchange._fee_schedule else Decimal("0")
+                exit_fee = fee_rate * price * pos_amount
                 total_fee = entry_fee + exit_fee
-                net_pnl = realized_pnl - total_fee
-                realized_pnl_pct = (realized_pnl / entry_value * 100) if entry_value > 0 else Decimal("0")
+                net_pnl = gross_pnl - total_fee
+                gross_pnl_pct = (gross_pnl / entry_value * 100) if entry_value > 0 else Decimal("0")
                 net_pnl_pct = (net_pnl / entry_value * 100) if entry_value > 0 else Decimal("0")
 
-                # Write to local log file
                 self.local_log.log_exit(
                     symbol=signal.symbol, exit_price=price, entry_price=entry_price,
                     amount=pos_amount, exit_reason=exit_reason,
-                    gross_pnl=realized_pnl, net_pnl=net_pnl, net_pnl_pct=net_pnl_pct,
+                    gross_pnl=gross_pnl, net_pnl=net_pnl, net_pnl_pct=net_pnl_pct,
                     entry_fee=entry_fee, exit_fee=exit_fee,
                 )
 
                 pnl_color = "green" if net_pnl >= 0 else "red"
-                pnl_display = (
-                    f"gross=[{pnl_color}]${float(realized_pnl):+.4f}[/{pnl_color}] "
+                exit_tag = "◀ SELL" if is_exit_long else "▶ BUY"
+                exit_label = "CLOSE LONG" if is_exit_long else "COVER SHORT"
+
+                console.print(
+                    f"[bold {pnl_color}]{exit_tag} ({exit_label})[/bold {pnl_color}] {signal.symbol}  "
+                    f"@ {format_price(price)}  "
+                    f"entry={format_price(entry_price)}  "
+                    f"reason=[bold]{exit_reason}[/bold]  "
+                    f"gross=${float(gross_pnl):+.4f} ({float(gross_pnl_pct):+.2f}%)  "
+                    f"fees=${float(total_fee):.4f}  "
                     f"net=[{pnl_color}]${float(net_pnl):+.4f} ({float(net_pnl_pct):+.2f}%)[/{pnl_color}]"
                 )
-
-                exit_msg = (
-                    f"[bold red]◀ SELL[/bold red] {signal.symbol}  "
-                    f"@ {format_price(price)}  "
-                    f"entry= {format_price(entry_price)}  "
-                    f"reason=[bold]{exit_reason}[/bold]  "
-                    f"gross_P&L= ${float(realized_pnl):+.4f} ({float(realized_pnl_pct):+.2f}%)  "
-                    f"fees= ${float(total_fee):.4f}  "
-                    f"net_P&L= [{pnl_color}]${float(net_pnl):+.4f} ({float(net_pnl_pct):+.2f}%)[/{pnl_color}]"
-                )
-                console.print(exit_msg)
             else:
-                pnl_display = ""
-                console.print(f"[bold red]◀ SELL[/bold red] {signal.symbol}  @ {format_price(price)}  reason=[bold]{exit_reason}[/bold]")
+                console.print(f"[bold]{exit_reason}[/bold] {signal.symbol}  @ {format_price(price)}")
 
         # Record trade
         trade_entry = {
