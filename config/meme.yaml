@@ -1,0 +1,49 @@
+# Meme Coin Spot Trading — OKX Small Account ($30)
+# 适用于 30 美元小账户的 meme 币波段交易配置
+
+exchange:
+  id: "okx"
+  sandbox: false
+  timeout: 15000
+
+market:
+  type: "spot"
+  symbols:
+    - "PEPE/USDT"
+    - "FLOKI/USDT"
+    - "WIF/USDT"
+    - "BONK/USDT"
+    - "MEME/USDT"
+    - "SHIB/USDT"
+    - "DOGE/USDT"
+  quote_currency: "USDT"
+  timeframe: "3m"              # 3 分钟 K 线，适合 meme 币快进快出
+
+strategy:
+  active: "meme_scalper"
+
+meme_scalper:
+  min_volume_usdt: 500000      # 24h 最低成交量 (USDT)，过滤无流动性币
+  volume_spike_ratio: 2.5      # 成交量突增倍数阈值
+  momentum_lookback: 6         # 动量计算回溯 K 线数
+  ema_period: 5                # 短期 EMA
+  rsi_period: 8                # 快周期 RSI
+  rsi_entry_min: 35            # RSI 低于此值视为超卖（潜在反弹）
+  rsi_entry_max: 65            # RSI 低于此值才考虑入场（不追高）
+  take_profit_pct: 2.0         # 止盈 2%
+  stop_loss_pct: 2.5           # 止损 2.5%
+  max_hold_minutes: 45         # 最长持仓时间（分钟），到期强制平仓
+  trailing_stop_pct: 1.0       # 移动止损：从最高点回撤 1% 触发
+
+risk:
+  max_position_pct: 40         # 单币最大仓位 40% = $12
+  max_leverage: 1              # 现货无杠杆
+  max_daily_loss_pct: 15       # 日亏损上限 15% = $4.5
+  max_drawdown_pct: 25         # 总回撤上限 25%
+  cooldown_seconds: 30         # 同币冷却 30 秒
+  max_concurrent_positions: 3  # 最多同时持有 3 个币
+
+logging:
+  level: "INFO"
+  format: "text"
+  trade_journal: "data/logs/meme_trades.csv"

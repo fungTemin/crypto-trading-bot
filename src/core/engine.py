@@ -34,6 +34,7 @@ from src.strategy.fee_calculator import FeeCalculator, FeeSchedule as FeeSchedul
 from src.strategy.grid import GridStrategy
 from src.strategy.mean_reversion import MeanReversionStrategy
 from src.strategy.trend_following import TrendFollowingStrategy
+from src.strategy.meme_scalper import MemeScalperStrategy
 from src.utils.logger import TradeLogger, setup_logger
 
 logger = setup_logger(__name__)
@@ -190,6 +191,13 @@ class TradingEngine:
                 signal_ema=tf_cfg.signal_ema,
                 atr_period=tf_cfg.atr_period,
                 atr_multiplier=tf_cfg.atr_multiplier,
+            )
+
+        if strategy_name == "meme_scalper":
+            return MemeScalperStrategy(
+                market_type=self.market_type,
+                fee_calculator=self.fee_calculator,
+                event_bus=self.event_bus,
             )
 
         raise ValueError(f"Unknown strategy: {strategy_name}")
