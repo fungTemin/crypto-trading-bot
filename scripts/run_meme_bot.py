@@ -44,6 +44,149 @@ from src.utils.logger import TradeLogger, setup_logger
 logger = setup_logger("meme_bot", level="INFO", fmt="text")
 console = Console()
 
+# ---- Local File Logger (gitignored, never uploaded) ----
+
+class LocalTradeLogger:
+    """Writes trade records to local files only (data/logs/ is gitignored)."""
+
+    def __init__(self, base_path: str = "data/logs") -> None:
+        import os as _os
+        _os.makedirs(base_path, exist_ok=True)
+        session_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        self.session_id = session_ts
+        self.csv_path = f"{base_path}/meme_session_{session_ts}.csv"
+        self.txt_path = f"{base_path}/meme_session_{session_ts}.txt"
+        self.json_path = f"{base_path}/meme_session_{session_ts}.json"
+
+        # Write CSV header
+        with open(self.csv_path, "w") as f:
+            f.write("timestamp,action,symbol,price,amount,expected_return_pct,exit_reason,"
+                    "entry_price,gross_pnl,net_pnl,net_pnl_pct,total_fees\n")
+
+        # Write text header
+        with open(self.txt_path, "w") as f:
+            f.write(f"=== Meme Bot Session {session_ts} ===\n")
+            f.write(f"Started: {datetime.now(timezone.utc).isoformat()}\n\n")
+
+        self._json_records: list[dict] = []
+
+    def log_entry(self, symbol: str, price: Decimal, amount: Decimal,
+                  expected_return: str, fee: Decimal) -> None:
+        """Log a BUY entry."""
+        ts = datetime.now(timezone.utc).isoformat()
+        price_str = f"{float(price):.10f}".rstrip('0').rstrip('.')
+        amount_str = f"{float(amount):.6f}".rstrip('0').rstrip('.')
+
+        # CSV
+        with open(self.csv_path, "a") as f:
+            f.write(f"{ts},BUY,{symbol},{price_str},{amount_str},{expected_return},,,,,\n")
+
+        # Text log
+        with open(self.txt_path, "a") as f:
+            f.write(f"[{ts[:19]}] ▶ BUY  {symbol:12s} @ {price_str:>16s}  "
+                    f"qty={amount_str:>12s}  expected_ret={expected_return}  "
+                    f"fee≈${float(fee):.4f}\n")
+
+        # JSON buffer
+        self._json_records.append({
+            "timestamp": ts, "action": "BUY", "symbol": symbol,
+            "price": float(price), "amount": float(amount),
+            "expected_return_pct": expected_return, "fee": float(fee),
+        })
+
+    def log_exit(self, symbol: str, exit_price: Decimal, entry_price: Decimal,
+                 amount: Decimal, exit_reason: str, gross_pnl: Decimal,
+                 net_pnl: Decimal, net_pnl_pct: Decimal,
+                 entry_fee: Decimal, exit_fee: Decimal) -> None:
+        """Log a SELL exit with full P&L breakdown."""
+        ts = datetime.now(timezone.utc).isoformat()
+        exit_str = f"{float(exit_price):.10f}".rstrip('0').rstrip('.')
+        entry_str = f"{float(entry_price):.10f}".rstrip('0').rstrip('.')
+        amount_str = f"{float(amount):.6f}".rstrip('0').rstrip('.')
+        total_fee = entry_fee + exit_fee
+
+        # CSV
+        with open(self.csv_path, "a") as f:
+            f.write(f"{ts},SELL,{symbol},{exit_str},{amount_str},,{exit_reason},"
+                    f"{entry_str},{float(gross_pnl):.6f},{float(net_pnl):.6f},"
+                    f"{float(net_pnl_pct):.4f},{float(total_fee):.6f}\n")
+
+        # Text log
+        pnl_mark = "+" if net_pnl >= 0 else ""
+        with open(self.txt_path, "a") as f:
+            f.write(f"[{ts[:19]}] ◀ SELL {symbol:12s} @ {exit_str:>16s}  "
+                    f"entry={entry_str:>16s}  qty={amount_str:>12s}\n"
+                    f"         reason: {exit_reason}\n"
+                    f"         gross:  ${float(gross_pnl):+.6f}  "
+                    f"net: ${float(net_pnl):+.6f} ({float(net_pnl_pct):+.2f}%)  "
+                    f"fees: ${float(total_fee):.6f}\n"
+                    f"         result: {pnl_mark}${float(net_pnl):+.6f}\n\n")
+
+        # JSON buffer
+        self._json_records.append({
+            "timestamp": ts, "action": "SELL", "symbol": symbol,
+            "exit_price": float(exit_price), "entry_price": float(entry_price),
+            "amount": float(amount), "exit_reason": exit_reason,
+            "gross_pnl": float(gross_pnl), "net_pnl": float(net_pnl),
+            "net_pnl_pct": float(net_pnl_pct),
+            "entry_fee": float(entry_fee), "exit_fee": float(exit_fee),
+            "total_fee": float(total_fee),
+        })
+
+    def log_summary(self, mode: str, start_capital: Decimal, final_equity: Decimal,
+                    total_trades: int, buys: int, sells: int, total_fees: Decimal,
+                    tp_count: int, sl_count: int, trail_count: int, time_count: int,
+                    runtime_secs: float) -> str:
+        """Write session summary and return the log file paths."""
+        pnl = final_equity - start_capital
+        pnl_pct = float(pnl / start_capital * 100) if start_capital > 0 else 0
+
+        summary = (
+            f"\n=== Session Summary ===\n"
+            f"Mode:           {mode}\n"
+            f"Runtime:        {int(runtime_secs // 60)}m {int(runtime_secs % 60)}s\n"
+            f"Total trades:   {total_trades}\n"
+            f"Buys:           {buys}\n"
+            f"Sells:          {sells}\n"
+            f"TP exits:       {tp_count}\n"
+            f"SL exits:       {sl_count}\n"
+            f"Trailing exits: {trail_count}\n"
+            f"Time exits:     {time_count}\n"
+            f"Starting:       ${float(start_capital):.2f}\n"
+            f"Final equity:   ${float(final_equity):.2f}\n"
+            f"P&L:            ${float(pnl):+.4f} ({pnl_pct:+.2f}%)\n"
+            f"Total fees:     ${float(total_fees):.4f}\n"
+            f"Ended:          {datetime.now(timezone.utc).isoformat()}\n"
+        )
+
+        with open(self.txt_path, "a") as f:
+            f.write(summary)
+
+        # JSON
+        import json as _json
+        json_summary = {
+            "session_id": self.session_id,
+            "mode": mode,
+            "runtime_seconds": runtime_secs,
+            "start_capital": float(start_capital),
+            "final_equity": float(final_equity),
+            "pnl": float(pnl),
+            "pnl_pct": pnl_pct,
+            "total_trades": total_trades,
+            "buys": buys,
+            "sells": sells,
+            "tp_exits": tp_count,
+            "sl_exits": sl_count,
+            "trailing_exits": trail_count,
+            "time_exits": time_count,
+            "total_fees": float(total_fees),
+            "trades": self._json_records,
+        }
+        with open(self.json_path, "w") as f:
+            _json.dump(json_summary, f, indent=2, default=str)
+
+        return f"{self.csv_path}\n{self.txt_path}\n{self.json_path}"
+
 MEME_SYMBOLS = [
     "PEPE/USDT", "FLOKI/USDT", "WIF/USDT", "BONK/USDT",
     "MEME/USDT", "SHIB/USDT", "DOGE/USDT",
@@ -175,6 +318,7 @@ class MemeBot:
         self._running = False
         self._data_feed = None
         self._prev_volumes: dict[str, Decimal] = {}
+        self.local_log = LocalTradeLogger("data/logs")
 
     # ---- Build UI ----
 
@@ -416,24 +560,35 @@ class MemeBot:
         if is_buy:
             # ---- ENTRY ----
             self.strategy.record_entry(signal.symbol, price)
-            # Calculate actual amount from order
             actual_amount = order.filled if order.filled > 0 else amount
+            fee_rate = Decimal("0.001")
+            if self.exchange._fee_schedule:
+                fee_rate = self.exchange._fee_schedule.taker
+            entry_fee = fee_rate * price * actual_amount
+
             self.open_positions[signal.symbol] = {
                 "entry_price": str(price),
                 "amount": str(actual_amount),
                 "entry_time": datetime.now(timezone.utc).isoformat(),
-                "signal": f"vol_brk",
-                "fee": str(order.fee.total_fee_rate * price * actual_amount) if order.fee and order.fee.total_fee_rate else "0",
+                "signal": "vol_brk",
+                "fee": str(entry_fee),
                 "expected_return": f"{float(signal.expected_return_rate * 100):.2f}%",
             }
             pnl_display = ""
+
+            # Write to local log file
+            self.local_log.log_entry(
+                symbol=signal.symbol, price=price, amount=actual_amount,
+                expected_return=f"{float(signal.expected_return_rate * 100):.2f}%",
+                fee=entry_fee,
+            )
 
             console.print(
                 f"[bold green]▶ BUY[/bold green]  {signal.symbol}  "
                 f"@ {format_price(price)}  "
                 f"amount={float(actual_amount):.6f}  "
                 f"expected_return={float(signal.expected_return_rate * 100):.2f}%  "
-                f"fee=${float(Decimal(str(self.open_positions[signal.symbol]['fee']))):.4f}"
+                f"fee=${float(entry_fee):.4f}"
             )
         else:
             # ---- EXIT ----
@@ -452,6 +607,14 @@ class MemeBot:
                 net_pnl = realized_pnl - total_fee
                 realized_pnl_pct = (realized_pnl / entry_value * 100) if entry_value > 0 else Decimal("0")
                 net_pnl_pct = (net_pnl / entry_value * 100) if entry_value > 0 else Decimal("0")
+
+                # Write to local log file
+                self.local_log.log_exit(
+                    symbol=signal.symbol, exit_price=price, entry_price=entry_price,
+                    amount=pos_amount, exit_reason=exit_reason,
+                    gross_pnl=realized_pnl, net_pnl=net_pnl, net_pnl_pct=net_pnl_pct,
+                    entry_fee=entry_fee, exit_fee=exit_fee,
+                )
 
                 pnl_color = "green" if net_pnl >= 0 else "red"
                 pnl_display = (
@@ -514,6 +677,7 @@ class MemeBot:
         console.print(f"  P&L:            [{color}]${float(pnl):+.4f} ({pnl_pct:+.2f}%)[/{color}]")
         console.print(f"  Total fees:     ${float(self.exchange.total_fees_paid):.4f}")
 
+        tp_count = sl_count = trail_count = time_count = 0
         if self.trades:
             sells = [t for t in self.trades if t['side'] == 'sell']
             tp_count = sum(1 for t in sells if 'take_profit' in t.get('exit_reason', ''))
@@ -521,6 +685,24 @@ class MemeBot:
             trail_count = sum(1 for t in sells if 'trailing_stop' in t.get('exit_reason', ''))
             time_count = sum(1 for t in sells if 'time_stop' in t.get('exit_reason', ''))
             console.print(f"  TP exits: {tp_count} | SL exits: {sl_count} | Trailing: {trail_count} | Time: {time_count}")
+
+        # Write to local log files
+        runtime = time_module.time() - (self._session_start or time_module.time())
+        log_files = self.local_log.log_summary(
+            mode=self.mode,
+            start_capital=self.starting_capital,
+            final_equity=equity,
+            total_trades=len(self.trades),
+            buys=sum(1 for t in self.trades if t.get('side') == 'buy'),
+            sells=sum(1 for t in self.trades if t.get('side') == 'sell'),
+            total_fees=self.exchange.total_fees_paid,
+            tp_count=tp_count, sl_count=sl_count,
+            trail_count=trail_count, time_count=time_count,
+            runtime_secs=runtime,
+        )
+        console.print(f"\n[dim]Log files (local only, not uploaded to GitHub):[/dim]")
+        for f in log_files.strip().split("\n"):
+            console.print(f"  [dim cyan]{f}[/dim cyan]")
 
 
 def main() -> None:
