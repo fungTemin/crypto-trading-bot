@@ -42,7 +42,7 @@ from src.risk.position_sizer import PositionSizer
 from src.utils.local_trade_logger import LocalTradeLogger
 from src.utils.logger import TradeLogger, setup_logger
 
-logger = setup_logger("meme_bot", level="INFO", fmt="text")
+logger = setup_logger("meme_bot", level="INFO", fmt="json")
 console = Console()
 
 # ---- Local File Logger (gitignored, never uploaded) ----
@@ -295,7 +295,22 @@ class MemeBot:
         self._running = True
         self._session_start = time_module.time()
         self._tick_count = 0
-        print(f"[START] Bot starting with {len(self._symbols)} symbols, mode={self.mode}", flush=True)
+
+        # Log file paths for OpenClaw monitoring
+        log_files = {
+            "session_csv": str(self.local_log.csv_path),
+            "session_txt": str(self.local_log.txt_path),
+            "session_json": str(self.local_log.json_path),
+            "trade_csv": str(self.trade_logger.path),
+        }
+        logger.info("Bot starting",
+                    extra={"symbols": len(self._symbols), "mode": self.mode,
+                           "capital": float(self.starting_capital),
+                           "log_files": log_files})
+        console.print(f"[dim]Log files:[/dim]")
+        console.print(f"  [dim]Session CSV:[/dim] {log_files['session_csv']}")
+        console.print(f"  [dim]Session JSON:[/dim] {log_files['session_json']}")
+        console.print(f"  [dim]Trade CSV:[/dim] {log_files['trade_csv']}")
 
         if self.mode == self.MODE_OFFLINE:
             console.print("[cyan]Offline simulation[/cyan]")
@@ -395,13 +410,23 @@ class MemeBot:
         layout["positions"].update(self.render_positions_table())
         layout["trades"].update(self.render_trade_log())
 
-        # Heartbeat for file-based monitoring (prints every 60s)
+        # Structured heartbeat for OpenClaw monitoring (every 60s)
         now_ts = int(time_module.time())
         if not hasattr(self, '_last_hb') or now_ts - self._last_hb >= 60:
             self._last_hb = now_ts
-            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] HB | "
-                  f"trades={len(self.trades)} | symbols={len(self._symbols)}",
-                  flush=True)
+            equity = self.exchange.get_equity("USDT")
+            pnl = equity - self.starting_capital
+            positions = await self.exchange.fetch_positions()
+            open_pos = len(positions)
+            logger.info("heartbeat",
+                        extra={"tick": self._tick_count,
+                               "trades": len(self.trades),
+                               "open_positions": open_pos,
+                               "equity": float(equity),
+                               "pnl": float(pnl),
+                               "pnl_pct": float(pnl / self.starting_capital * 100) if self.starting_capital > 0 else 0,
+                               "symbols": len(self._symbols),
+                               "mode": self.mode})
 
     async def _fetch_kline_for_symbol(self, symbol: str) -> None:
         """Fetch kline data for one symbol (used concurrently)."""
@@ -412,11 +437,14 @@ class MemeBot:
                     k_vol = Decimal(str(k[5]))
                     self.strategy.update_kline_volume(symbol, k_vol)
                 if self._tick_count <= 1:
-                    print(f"[KLINE] {symbol}: {len(klines)} candles, last vol={klines[-1][5]}", flush=True)
+                    logger.debug("kline loaded",
+                                extra={"symbol": symbol, "candles": len(klines),
+                                       "last_vol": klines[-1][5]})
             self._last_kline_fetch[symbol] = time_module.time()
         except Exception as e:
             if self._tick_count <= 5:
-                print(f"[KLINE ERR] {symbol}: {type(e).__name__}: {str(e)[:100]}", flush=True)
+                logger.warning("kline fetch failed",
+                              extra={"symbol": symbol, "error": str(e)[:100]})
 
     async def _handle_signal(self, signal, ticker: Ticker) -> None:
         sig_type = signal.signal_type
@@ -506,6 +534,14 @@ class MemeBot:
                 "exit_reason": "", "pnl_display": "",
             })
 
+            # Structured log for OpenClaw monitoring
+            logger.info("trade_entry",
+                        extra={"symbol": signal.symbol, "side": side_label,
+                               "price": float(price), "amount": float(actual_amount),
+                               "fee": float(entry_fee),
+                               "expected_return_pct": float(signal.expected_return_rate * 100),
+                               "equity": float(self.exchange.get_equity("USDT"))})
+
             if is_entry_long:
                 console.print(
                     f"[bold green]▶ BUY (LONG)[/bold green]  {signal.symbol}  "
@@ -557,6 +593,19 @@ class MemeBot:
                     gross_pnl=gross_pnl, net_pnl=net_pnl, net_pnl_pct=net_pnl_pct,
                     entry_fee=entry_fee, exit_fee=exit_fee,
                 )
+
+                # Structured log for OpenClaw monitoring
+                logger.info("trade_exit",
+                            extra={"symbol": signal.symbol, "side": pos_side,
+                                   "entry_price": float(entry_price),
+                                   "exit_price": float(price),
+                                   "amount": float(pos_amount),
+                                   "exit_reason": exit_reason,
+                                   "gross_pnl": float(gross_pnl),
+                                   "net_pnl": float(net_pnl),
+                                   "net_pnl_pct": float(net_pnl_pct),
+                                   "total_fees": float(total_fee),
+                                   "equity": float(self.exchange.get_equity("USDT"))})
 
                 pnl_color = "green" if net_pnl >= 0 else "red"
                 exit_tag = "◀ SELL" if is_exit_long else "▶ BUY"
@@ -640,6 +689,22 @@ class MemeBot:
         console.print(f"\n[dim]Log files (local only, not uploaded to GitHub):[/dim]")
         for f in log_files.strip().split("\n"):
             console.print(f"  [dim cyan]{f}[/dim cyan]")
+
+        # Structured session summary for OpenClaw
+        logger.info("session_complete",
+                    extra={"mode": self.mode,
+                           "runtime_mins": int((time_module.time() - (self._session_start or time_module.time())) // 60),
+                           "total_trades": len(self.trades),
+                           "buys": sum(1 for t in self.trades if t.get('side') == 'buy'),
+                           "sells": sum(1 for t in self.trades if t.get('side') == 'sell'),
+                           "start_capital": float(self.starting_capital),
+                           "final_equity": float(equity),
+                           "pnl": float(pnl),
+                           "pnl_pct": pnl_pct,
+                           "total_fees": float(self.exchange.total_fees_paid),
+                           "tp_exits": tp_count, "sl_exits": sl_count,
+                           "trailing_exits": trail_count, "time_exits": time_count,
+                           "log_files": log_files.strip().split("\n")})
 
 
 def main() -> None:
