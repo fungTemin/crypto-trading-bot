@@ -223,13 +223,11 @@ class MemeBot:
         # Event bus
         self.event_bus = EventBus()
 
-        # Strategy — looser params for offline demo, tight for live
-        if mode == self.MODE_OFFLINE:
-            vol_ratio = Decimal("1.5")   # easier to trigger in synthetic data
-            min_vol = Decimal("300000")
-        else:
-            vol_ratio = Decimal("2.5")
-            min_vol = Decimal("500000")
+        # Strategy params — conservative for real trading
+        # 实盘参数：使用成交量变化率（每次ticker查询间的差值）来检测突破
+        # 24h 滚动成交量变化慢，使用较低阈值
+        vol_ratio = Decimal("1.5")
+        min_vol = Decimal("200000")
 
         self.strategy = MemeScalperStrategy(
             market_type=MarketType.SPOT,
@@ -267,6 +265,7 @@ class MemeBot:
 
         self._running = False
         self._data_feed = None  # Real API or synthetic
+        self._prev_volumes: dict[str, Decimal] = {}  # for volume delta calc
 
     async def start(self) -> None:
         self._running = True
@@ -311,7 +310,7 @@ class MemeBot:
             import ccxt.async_support as ccxt_async
             opts: dict = {"enableRateLimit": True, "timeout": 15000}
             if self.proxy:
-                opts["proxies"] = {"http": self.proxy, "https": self.proxy}
+                opts["socksProxy"] = self.proxy  # ccxt uses socksProxy directly
             exchange = ccxt_async.okx(opts)
             # Test connection
             ticker = await exchange.fetch_ticker("PEPE/USDT")
@@ -327,13 +326,36 @@ class MemeBot:
             if not self._running:
                 break
             try:
-                ticker = await self._data_feed.fetch_ticker(symbol)
+                raw = await self._data_feed.fetch_ticker(symbol)
+
+                # 24h rolling volume
+                current_vol = Decimal(str(raw.get('baseVolume', 0) or 0))
+                # Volume delta: change since last tick (proxy for incoming volume)
+                vol_delta = current_vol
+                prev_vol = self._prev_volumes.get(symbol)
+                if prev_vol is not None and prev_vol > 0:
+                    vol_delta = current_vol - prev_vol
+                    if vol_delta < 0:
+                        vol_delta = current_vol  # reset if negative (unlikely)
+                self._prev_volumes[symbol] = current_vol
+
+                # Convert ccxt ticker to our Ticker model
+                ticker = Ticker(
+                    symbol=symbol,
+                    bid=Decimal(str(raw.get('bid', 0) or 0)),
+                    ask=Decimal(str(raw.get('ask', 0) or 0)),
+                    last=Decimal(str(raw.get('last', 0) or 0)),
+                    high=Decimal(str(raw.get('high', 0) or 0)),
+                    low=Decimal(str(raw.get('low', 0) or 0)),
+                    volume=vol_delta,
+                )
                 self.exchange.set_ticker(ticker)
 
                 signal = await self.strategy.on_ticker(ticker)
                 if signal:
                     await self._handle_signal(signal)
-            except Exception:
+            except Exception as e:
+                logger.debug("Ticker error for %s: %s", symbol, str(e)[:100])
                 continue
             await asyncio.sleep(0.1)
 

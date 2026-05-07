@@ -297,24 +297,32 @@ class MemeScalperStrategy(BaseStrategy):
 
     @staticmethod
     def _calc_rsi(prices: list[Decimal], period: int = 8) -> Optional[float]:
+        """RSI using percentage changes (works for sub-penny meme coin prices)."""
         if len(prices) < period + 1:
             return None
         gains = []
         losses = []
         for i in range(-period, 0):
-            diff = float(prices[i] - prices[i - 1])
-            if diff >= 0:
-                gains.append(diff)
+            prev = float(prices[i - 1])
+            curr = float(prices[i])
+            if prev == 0:
+                continue
+            pct_change = ((curr - prev) / prev) * 100  # percentage change
+            if pct_change >= 0:
+                gains.append(pct_change)
                 losses.append(0.0)
             else:
                 gains.append(0.0)
-                losses.append(abs(diff))
+                losses.append(abs(pct_change))
 
-        avg_gain = sum(gains) / period
-        avg_loss = sum(losses) / period
+        if len(gains) == 0:
+            return None
+
+        avg_gain = sum(gains) / len(gains)
+        avg_loss = sum(losses) / len(losses)
 
         if avg_loss == 0:
-            return 100.0
+            return 100.0 if avg_gain > 0 else 50.0
 
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
