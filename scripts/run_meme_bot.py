@@ -277,8 +277,9 @@ class MemeBot:
     MODE_LIVE = "live"
 
     def __init__(self, mode: str = MODE_OFFLINE, capital: Decimal = Decimal("30"),
-                 proxy: str | None = None) -> None:
+                 proxy: str | None = None, market_type: MarketType = MarketType.SPOT) -> None:
         self.mode = mode
+        self.market_type = market_type
         self.starting_capital = capital
         self.trades: list[dict] = []      # trade history log
         self.open_positions: dict[str, dict] = {}  # symbol -> entry info
@@ -293,7 +294,7 @@ class MemeBot:
         self.event_bus = EventBus()
 
         self.strategy = MemeScalperStrategy(
-            market_type=MarketType.SPOT, fee_calculator=self.fee_calculator,
+            market_type=self.market_type, fee_calculator=self.fee_calculator,
             event_bus=self.event_bus,
             min_volume_usdt=Decimal("200000"), volume_spike_ratio=Decimal("1.5"),
             momentum_lookback=6, ema_period=5, rsi_period=8,
@@ -486,9 +487,11 @@ class MemeBot:
                 console.print("[red]Cannot connect to OKX. Aborting.[/red]")
                 return
 
+        mt_text = "SPOT" if self.market_type == MarketType.SPOT else "FUTURES"
         console.print(f"Capital: ${float(self.starting_capital):.2f}  |  "
+                      f"Market: {mt_text}  |  "
                       f"Symbols: {len(MEME_SYMBOLS)}  |  "
-                      f"Min vol: $200k  |  TP: +2%  |  SL: -2.5%")
+                      f"Min vol: $200k  |  TP: ±2%  |  SL: ±2.5%")
         console.print("=" * 70)
 
         layout = self.build_layout()
@@ -615,6 +618,14 @@ class MemeBot:
                 expected_return=f"{float(signal.expected_return_rate * 100):.2f}%",
                 fee=entry_fee,
             )
+
+            self.trades.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "symbol": signal.symbol, "side": signal.order_side.value,
+                "price": str(price),
+                "expected_return_pct": f"{float(signal.expected_return_rate * 100):.2f}",
+                "exit_reason": "", "pnl_display": "",
+            })
 
             if is_entry_long:
                 console.print(
@@ -753,10 +764,11 @@ class MemeBot:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Meme Coin Spot Trading Bot")
+    parser = argparse.ArgumentParser(description="Meme Coin Trading Bot")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--paper", action="store_true")
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--futures", action="store_true", help="Enable futures mode (supports short-selling)")
     parser.add_argument("--capital", type=float, default=30)
     parser.add_argument("--proxy", type=str, default=None)
     args = parser.parse_args()
@@ -769,7 +781,8 @@ def main() -> None:
         mode = MemeBot.MODE_OFFLINE
 
     capital = Decimal(str(args.capital))
-    bot = MemeBot(mode=mode, capital=capital, proxy=args.proxy)
+    market_type = MarketType.FUTURE if args.futures else MarketType.SPOT
+    bot = MemeBot(mode=mode, capital=capital, proxy=args.proxy, market_type=market_type)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
