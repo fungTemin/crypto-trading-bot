@@ -188,16 +188,34 @@ class LocalTradeLogger:
         return f"{self.csv_path}\n{self.txt_path}\n{self.json_path}"
 
 MEME_SYMBOLS = [
-    # Meme coins (high vol)
+    # === Meme coins (proven high vol) ===
     "PEPE/USDT", "FLOKI/USDT", "WIF/USDT", "BONK/USDT",
     "MEME/USDT", "SHIB/USDT", "DOGE/USDT",
     "TURBO/USDT", "MEW/USDT", "BOME/USDT",
     "NEIRO/USDT", "BABYDOGE/USDT",
-    # Small cap / narrative coins (volatile)
-    "PEOPLE/USDT", "ORDI/USDT", "AGLD/USDT", "ID/USDT",
-    "ACE/USDT", "BIGTIME/USDT",
-    # Mid cap volatile
-    "TRB/USDT", "YGG/USDT", "PENDLE/USDT", "ARKM/USDT",
+    # === Today's top volatility (24h scan) ===
+    "DOGS/USDT",    # +71%, 59% range — massive pump
+    "HMSTR/USDT",   # +22%, 33% range
+    "NOT/USDT",     # +23%, 29% range
+    "DUCK/USDT",    # +12%, 31% range
+    "CAT/USDT",     # +8%, 11% range, $50B vol
+    # === High volatility small/mid caps ===
+    "JTO/USDT",     # 27% range
+    "STORJ/USDT",   # 27% range
+    "CFG/USDT",     # 20% range
+    "CATI/USDT",    # 20% range
+    "VIRTUAL/USDT", # 17% range, AI narrative
+    "MAJOR/USDT",   # 19% range
+    "ICP/USDT",     # 18% range
+    "BIO/USDT",     # 17% range
+    "VINE/USDT",    # 16% range
+    # === Large cap volatile ===
+    "NEAR/USDT",    # 13% range
+    "OP/USDT",      # 13% range
+    "ENA/USDT",     # 12% range
+    "STRK/USDT",    # 12% range
+    "ONDO/USDT",    # 11% range, RWA
+    "ZK/USDT",      # 11% range, L2
 ]
 
 MEME_PROFILES = {
@@ -221,11 +239,29 @@ MEME_PROFILES = {
     "ID/USDT":      {"base_price": Decimal("0.30000000"), "volatility": 0.017, "base_volume": 250_000},
     "ACE/USDT":     {"base_price": Decimal("2.00000000"), "volatility": 0.016, "base_volume": 200_000},
     "BIGTIME/USDT": {"base_price": Decimal("0.15000000"), "volatility": 0.019, "base_volume": 300_000},
-    # Mid cap volatile
-    "TRB/USDT":     {"base_price": Decimal("80.0000000"), "volatility": 0.025, "base_volume": 500_000},
-    "YGG/USDT":     {"base_price": Decimal("0.50000000"), "volatility": 0.018, "base_volume": 300_000},
-    "PENDLE/USDT":  {"base_price": Decimal("3.00000000"), "volatility": 0.016, "base_volume": 400_000},
-    "ARKM/USDT":    {"base_price": Decimal("1.50000000"), "volatility": 0.017, "base_volume": 350_000},
+    # Mid cap volatile (replaced with today's top volatility)
+    # Today's top finds
+    "DOGS/USDT":    {"base_price": Decimal("0.00009000"), "volatility": 0.040, "base_volume": 100_000_000},
+    "HMSTR/USDT":   {"base_price": Decimal("0.00020000"), "volatility": 0.025, "base_volume": 10_000_000},
+    "NOT/USDT":     {"base_price": Decimal("0.00060000"), "volatility": 0.022, "base_volume": 5_000_000},
+    "DUCK/USDT":    {"base_price": Decimal("0.00010000"), "volatility": 0.025, "base_volume": 3_000_000},
+    "CAT/USDT":     {"base_price": Decimal("0.00003000"), "volatility": 0.015, "base_volume": 50_000_000},
+    "JTO/USDT":     {"base_price": Decimal("0.40000000"), "volatility": 0.020, "base_volume": 8_000_000},
+    "STORJ/USDT":   {"base_price": Decimal("0.11000000"), "volatility": 0.022, "base_volume": 5_000_000},
+    "CFG/USDT":     {"base_price": Decimal("0.27000000"), "volatility": 0.020, "base_volume": 6_000_000},
+    "CATI/USDT":    {"base_price": Decimal("0.07000000"), "volatility": 0.018, "base_volume": 5_000_000},
+    "VIRTUAL/USDT": {"base_price": Decimal("0.95000000"), "volatility": 0.018, "base_volume": 3_000_000},
+    "MAJOR/USDT":   {"base_price": Decimal("0.08000000"), "volatility": 0.018, "base_volume": 1_500_000},
+    "ICP/USDT":     {"base_price": Decimal("3.00000000"), "volatility": 0.016, "base_volume": 2_000_000},
+    "BIO/USDT":     {"base_price": Decimal("0.04500000"), "volatility": 0.020, "base_volume": 100_000_000},
+    "VINE/USDT":    {"base_price": Decimal("0.01700000"), "volatility": 0.018, "base_volume": 30_000_000},
+    # Large cap volatile
+    "NEAR/USDT":    {"base_price": Decimal("1.50000000"), "volatility": 0.014, "base_volume": 4_000_000},
+    "OP/USDT":      {"base_price": Decimal("0.14000000"), "volatility": 0.014, "base_volume": 20_000_000},
+    "ENA/USDT":     {"base_price": Decimal("0.30000000"), "volatility": 0.015, "base_volume": 30_000_000},
+    "STRK/USDT":    {"base_price": Decimal("0.04000000"), "volatility": 0.015, "base_volume": 60_000_000},
+    "ONDO/USDT":    {"base_price": Decimal("0.80000000"), "volatility": 0.014, "base_volume": 12_000_000},
+    "ZK/USDT":      {"base_price": Decimal("0.06000000"), "volatility": 0.015, "base_volume": 50_000_000},
 }
 
 

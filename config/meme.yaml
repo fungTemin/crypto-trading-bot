@@ -1,5 +1,5 @@
 # Meme Coin Spot Trading — OKX Small Account ($30)
-# 22币种覆盖：Meme + 小市值 + 中市值波动币
+# 30币种 | 基于实时市场波动率扫描筛选
 
 exchange:
   id: "okx"
@@ -9,7 +9,7 @@ exchange:
 market:
   type: "spot"
   symbols:
-    # Meme coins (7)
+    # Meme coins (12)
     - "PEPE/USDT"
     - "FLOKI/USDT"
     - "WIF/USDT"
@@ -17,24 +17,34 @@ market:
     - "MEME/USDT"
     - "SHIB/USDT"
     - "DOGE/USDT"
-    # Extra meme (5)
     - "TURBO/USDT"
     - "MEW/USDT"
     - "BOME/USDT"
     - "NEIRO/USDT"
     - "BABYDOGE/USDT"
-    # Small cap / narrative (6)
-    - "PEOPLE/USDT"
-    - "ORDI/USDT"
-    - "AGLD/USDT"
-    - "ID/USDT"
-    - "ACE/USDT"
-    - "BIGTIME/USDT"
-    # Mid cap volatile (4)
-    - "TRB/USDT"
-    - "YGG/USDT"
-    - "PENDLE/USDT"
-    - "ARKM/USDT"
+    # Today's top volatility (24h scan: 20-59% range)
+    - "DOGS/USDT"       # +71.4%, 59% daily range
+    - "HMSTR/USDT"      # +21.9%, 33% range
+    - "NOT/USDT"        # +23.1%, 29% range
+    - "DUCK/USDT"       # +11.6%, 31% range
+    - "CAT/USDT"        # +7.8%, $50B vol
+    # High volatility small/mid caps
+    - "JTO/USDT"        # 27% range
+    - "STORJ/USDT"      # 27% range
+    - "CFG/USDT"        # 20% range
+    - "CATI/USDT"       # 20% range
+    - "VIRTUAL/USDT"    # 17% range
+    - "MAJOR/USDT"      # 19% range
+    - "ICP/USDT"        # 18% range
+    - "BIO/USDT"        # 17% range
+    - "VINE/USDT"       # 16% range
+    # Large cap volatile
+    - "NEAR/USDT"       # 13% range
+    - "OP/USDT"         # 13% range
+    - "ENA/USDT"        # 12% range
+    - "STRK/USDT"       # 12% range
+    - "ONDO/USDT"       # 11% range
+    - "ZK/USDT"         # 11% range
   quote_currency: "USDT"
   timeframe: "3m"
 
@@ -42,8 +52,8 @@ strategy:
   active: "meme_scalper"
 
 meme_scalper:
-  min_volume_usdt: 200000
-  volume_spike_ratio: 2.5
+  min_volume_usdt: 100000
+  volume_spike_ratio: 1.2
   momentum_lookback: 6
   ema_period: 5
   rsi_period: 8
