@@ -188,18 +188,44 @@ class LocalTradeLogger:
         return f"{self.csv_path}\n{self.txt_path}\n{self.json_path}"
 
 MEME_SYMBOLS = [
+    # Meme coins (high vol)
     "PEPE/USDT", "FLOKI/USDT", "WIF/USDT", "BONK/USDT",
     "MEME/USDT", "SHIB/USDT", "DOGE/USDT",
+    "TURBO/USDT", "MEW/USDT", "BOME/USDT",
+    "NEIRO/USDT", "BABYDOGE/USDT",
+    # Small cap / narrative coins (volatile)
+    "PEOPLE/USDT", "ORDI/USDT", "AGLD/USDT", "ID/USDT",
+    "ACE/USDT", "BIGTIME/USDT",
+    # Mid cap volatile
+    "TRB/USDT", "YGG/USDT", "PENDLE/USDT", "ARKM/USDT",
 ]
 
 MEME_PROFILES = {
-    "PEPE/USDT":  {"base_price": Decimal("0.00001000"), "volatility": 0.015, "base_volume": 2_000_000},
-    "FLOKI/USDT": {"base_price": Decimal("0.00010000"), "volatility": 0.012, "base_volume": 800_000},
-    "WIF/USDT":   {"base_price": Decimal("0.50000000"), "volatility": 0.018, "base_volume": 3_000_000},
-    "BONK/USDT":  {"base_price": Decimal("0.00002000"), "volatility": 0.014, "base_volume": 1_500_000},
-    "MEME/USDT":  {"base_price": Decimal("0.01500000"), "volatility": 0.016, "base_volume": 600_000},
-    "SHIB/USDT":  {"base_price": Decimal("0.00002000"), "volatility": 0.010, "base_volume": 5_000_000},
-    "DOGE/USDT":  {"base_price": Decimal("0.15000000"), "volatility": 0.008, "base_volume": 10_000_000},
+    # Meme
+    "PEPE/USDT":    {"base_price": Decimal("0.00001000"), "volatility": 0.015, "base_volume": 2_000_000},
+    "FLOKI/USDT":   {"base_price": Decimal("0.00010000"), "volatility": 0.012, "base_volume": 800_000},
+    "WIF/USDT":     {"base_price": Decimal("0.50000000"), "volatility": 0.018, "base_volume": 3_000_000},
+    "BONK/USDT":    {"base_price": Decimal("0.00002000"), "volatility": 0.014, "base_volume": 1_500_000},
+    "MEME/USDT":    {"base_price": Decimal("0.01500000"), "volatility": 0.016, "base_volume": 600_000},
+    "SHIB/USDT":    {"base_price": Decimal("0.00002000"), "volatility": 0.010, "base_volume": 5_000_000},
+    "DOGE/USDT":    {"base_price": Decimal("0.15000000"), "volatility": 0.008, "base_volume": 10_000_000},
+    "TURBO/USDT":   {"base_price": Decimal("0.00500000"), "volatility": 0.020, "base_volume": 400_000},
+    "MEW/USDT":     {"base_price": Decimal("0.00300000"), "volatility": 0.018, "base_volume": 300_000},
+    "BOME/USDT":    {"base_price": Decimal("0.01000000"), "volatility": 0.019, "base_volume": 500_000},
+    "NEIRO/USDT":   {"base_price": Decimal("0.00080000"), "volatility": 0.022, "base_volume": 600_000},
+    "BABYDOGE/USDT":{"base_price": Decimal("0.000000001"), "volatility": 0.020, "base_volume": 300_000},
+    # Small cap / narrative
+    "PEOPLE/USDT":  {"base_price": Decimal("0.03000000"), "volatility": 0.015, "base_volume": 400_000},
+    "ORDI/USDT":    {"base_price": Decimal("30.000000"), "volatility": 0.014, "base_volume": 300_000},
+    "AGLD/USDT":    {"base_price": Decimal("1.00000000"), "volatility": 0.018, "base_volume": 200_000},
+    "ID/USDT":      {"base_price": Decimal("0.30000000"), "volatility": 0.017, "base_volume": 250_000},
+    "ACE/USDT":     {"base_price": Decimal("2.00000000"), "volatility": 0.016, "base_volume": 200_000},
+    "BIGTIME/USDT": {"base_price": Decimal("0.15000000"), "volatility": 0.019, "base_volume": 300_000},
+    # Mid cap volatile
+    "TRB/USDT":     {"base_price": Decimal("80.0000000"), "volatility": 0.025, "base_volume": 500_000},
+    "YGG/USDT":     {"base_price": Decimal("0.50000000"), "volatility": 0.018, "base_volume": 300_000},
+    "PENDLE/USDT":  {"base_price": Decimal("3.00000000"), "volatility": 0.016, "base_volume": 400_000},
+    "ARKM/USDT":    {"base_price": Decimal("1.50000000"), "volatility": 0.017, "base_volume": 350_000},
 }
 
 
@@ -299,7 +325,7 @@ class MemeBot:
         self.strategy = MemeScalperStrategy(
             market_type=self.market_type, fee_calculator=self.fee_calculator,
             event_bus=self.event_bus,
-            min_volume_usdt=Decimal("200000"), volume_spike_ratio=Decimal("1.5"),
+            min_volume_usdt=Decimal("100000"), volume_spike_ratio=Decimal("1.2"),
             momentum_lookback=6, ema_period=5, rsi_period=8,
             rsi_entry_min=35, rsi_entry_max=65,
             take_profit_pct=Decimal("2"), stop_loss_pct=Decimal("2.5"),
@@ -324,7 +350,7 @@ class MemeBot:
         self.risk_manager = RiskManager(
             circuit_breaker=self.circuit_breaker,
             position_sizer=PositionSizer(max_position_pct=max_pos_pct, max_leverage=leverage),
-            max_concurrent_positions=3, cooldown_seconds=30,
+            max_concurrent_positions=5, cooldown_seconds=30,
         )
         self.trade_logger = TradeLogger("data/logs/meme_trades.csv")
 
@@ -482,6 +508,8 @@ class MemeBot:
     async def start(self) -> None:
         self._running = True
         self._session_start = time_module.time()
+        self._tick_count = 0
+        print(f"[START] Bot starting with {len(MEME_SYMBOLS)} symbols, mode={self.mode}", flush=True)
 
         if self.mode == self.MODE_OFFLINE:
             console.print("[cyan]Offline simulation[/cyan]")
@@ -520,6 +548,9 @@ class MemeBot:
                     await asyncio.sleep(0.5)
 
     async def _tick(self, live: Live, layout: Layout) -> None:
+        self._tick_count = getattr(self, '_tick_count', 0) + 1
+        if self._tick_count == 1 or self._tick_count % 60 == 0:
+            print(f"[TICK #{self._tick_count}] looping {len(MEME_SYMBOLS)} symbols...", flush=True)
         for symbol in MEME_SYMBOLS:
             if not self._running:
                 break
@@ -534,14 +565,15 @@ class MemeBot:
                     try:
                         klines = await self._data_feed.fetch_ohlcv(symbol, "1m", limit=30)
                         if klines:
-                            # Each kline: [timestamp, open, high, low, close, volume]
-                            # Feed each candle's volume to the strategy
                             for k in klines:
-                                k_vol = Decimal(str(k[5]))  # volume is index 5
+                                k_vol = Decimal(str(k[5]))
                                 self.strategy.update_kline_volume(symbol, k_vol)
+                            if self._tick_count <= 1:
+                                print(f"[KLINE] {symbol}: {len(klines)} candles, last vol={klines[-1][5]}", flush=True)
                         self._last_kline_fetch[symbol] = now
-                    except Exception:
-                        pass  # kline fetch is optional
+                    except Exception as e:
+                        if self._tick_count <= 5:
+                            print(f"[KLINE ERR] {symbol}: {type(e).__name__}: {str(e)[:100]}", flush=True)
 
                 ticker = Ticker(
                     symbol=symbol,
@@ -565,6 +597,14 @@ class MemeBot:
         layout["header"].update(self.render_header())
         layout["positions"].update(self.render_positions_table())
         layout["trades"].update(self.render_trade_log())
+
+        # Heartbeat for file-based monitoring (prints every 60s)
+        now_ts = int(time_module.time())
+        if not hasattr(self, '_last_hb') or now_ts - self._last_hb >= 60:
+            self._last_hb = now_ts
+            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] HB | "
+                  f"trades={len(self.trades)} | symbols={len(MEME_SYMBOLS)}",
+                  flush=True)
 
     async def _handle_signal(self, signal, ticker: Ticker) -> None:
         sig_type = signal.signal_type

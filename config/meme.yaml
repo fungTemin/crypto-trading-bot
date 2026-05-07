@@ -1,5 +1,5 @@
 # Meme Coin Spot Trading — OKX Small Account ($30)
-# 适用于 30 美元小账户的 meme 币波段交易配置
+# 22币种覆盖：Meme + 小市值 + 中市值波动币
 
 exchange:
   id: "okx"
@@ -9,6 +9,7 @@ exchange:
 market:
   type: "spot"
   symbols:
+    # Meme coins (7)
     - "PEPE/USDT"
     - "FLOKI/USDT"
     - "WIF/USDT"
@@ -16,32 +17,50 @@ market:
     - "MEME/USDT"
     - "SHIB/USDT"
     - "DOGE/USDT"
+    # Extra meme (5)
+    - "TURBO/USDT"
+    - "MEW/USDT"
+    - "BOME/USDT"
+    - "NEIRO/USDT"
+    - "BABYDOGE/USDT"
+    # Small cap / narrative (6)
+    - "PEOPLE/USDT"
+    - "ORDI/USDT"
+    - "AGLD/USDT"
+    - "ID/USDT"
+    - "ACE/USDT"
+    - "BIGTIME/USDT"
+    # Mid cap volatile (4)
+    - "TRB/USDT"
+    - "YGG/USDT"
+    - "PENDLE/USDT"
+    - "ARKM/USDT"
   quote_currency: "USDT"
-  timeframe: "3m"              # 3 分钟 K 线，适合 meme 币快进快出
+  timeframe: "3m"
 
 strategy:
   active: "meme_scalper"
 
 meme_scalper:
-  min_volume_usdt: 500000      # 24h 最低成交量 (USDT)，过滤无流动性币
-  volume_spike_ratio: 2.5      # 成交量突增倍数阈值
-  momentum_lookback: 6         # 动量计算回溯 K 线数
-  ema_period: 5                # 短期 EMA
-  rsi_period: 8                # 快周期 RSI
-  rsi_entry_min: 35            # RSI 低于此值视为超卖（潜在反弹）
-  rsi_entry_max: 65            # RSI 低于此值才考虑入场（不追高）
-  take_profit_pct: 2.0         # 止盈 2%
-  stop_loss_pct: 2.5           # 止损 2.5%
-  max_hold_minutes: 45         # 最长持仓时间（分钟），到期强制平仓
-  trailing_stop_pct: 1.0       # 移动止损：从最高点回撤 1% 触发
+  min_volume_usdt: 200000
+  volume_spike_ratio: 2.5
+  momentum_lookback: 6
+  ema_period: 5
+  rsi_period: 8
+  rsi_entry_min: 35
+  rsi_entry_max: 65
+  take_profit_pct: 2.0
+  stop_loss_pct: 2.5
+  max_hold_minutes: 45
+  trailing_stop_pct: 1.0
 
 risk:
-  max_position_pct: 40         # 单币最大仓位 40% = $12
-  max_leverage: 3              # 3倍合约杠杆
-  max_daily_loss_pct: 15       # 日亏损上限 15% = $4.5
-  max_drawdown_pct: 25         # 总回撤上限 25%
-  cooldown_seconds: 30         # 同币冷却 30 秒
-  max_concurrent_positions: 3  # 最多同时持有 3 个币
+  max_position_pct: 40
+  max_leverage: 3
+  max_daily_loss_pct: 15
+  max_drawdown_pct: 25
+  cooldown_seconds: 30
+  max_concurrent_positions: 5
 
 logging:
   level: "INFO"
