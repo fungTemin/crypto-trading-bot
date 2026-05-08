@@ -144,21 +144,25 @@ class TestShortSelling:
         assert signal is None or signal.signal_type != SignalType.SELL_SHORT
 
     @pytest.mark.asyncio
-    async def test_short_take_profit_exit(self) -> None:
-        """Short exit: price drops to take-profit level."""
+    async def test_short_trailing_stop_exit(self) -> None:
+        """Short trailing stop: price drops then rebounds 0.8%."""
         self.strategy.update_ticker_data("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
         for _ in range(30):
             self.strategy.update_ticker_data("WIF/USDT", Decimal("0.50000000"), Decimal("2000000"))
 
         self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"),
                                    amount=Decimal("50"), side="short")
-        # TP for short: entry * (1 - 1.5%) = 0.4925
-        ticker = make_ticker("WIF/USDT", Decimal("0.49200000"), Decimal("2000000"))
-        signal = await self.strategy.compute_signal(ticker)
+        # First push price down to set lowest_price (0.495)
+        down_ticker = make_ticker("WIF/USDT", Decimal("0.49500000"), Decimal("2000000"))
+        await self.strategy.compute_signal(down_ticker)
+        # Then price rebounds: 0.495 * 1.008 = 0.49896
+        # 0.499 > 0.49896 → triggers trailing_stop
+        up_ticker = make_ticker("WIF/USDT", Decimal("0.49900000"), Decimal("2000000"))
+        signal = await self.strategy.compute_signal(up_ticker)
 
         assert signal is not None
-        assert signal.signal_type == SignalType.BUY_SHORT  # buy to cover
-        assert signal.metadata["exit_reason"] == "take_profit"
+        assert signal.signal_type == SignalType.BUY_SHORT
+        assert signal.metadata["exit_reason"] == "trailing_stop"
 
     @pytest.mark.asyncio
     async def test_short_stop_loss_exit(self) -> None:
@@ -184,18 +188,23 @@ class TestLongExit:
         self.strategy.set_symbols(["PEPE/USDT"])
 
     @pytest.mark.asyncio
-    async def test_take_profit_exit(self) -> None:
+    async def test_trailing_stop_primary_exit(self) -> None:
+        """Trailing stop is now primary exit: price rises then retraces 0.8%."""
         for _ in range(30):
             self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
         self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"),
                                    amount=Decimal("1000000"), side="long")
-        # TP: entry * 1.015 = 0.00001015
-        ticker = make_ticker("PEPE/USDT", Decimal("0.00001020"), Decimal("2000000"))
-        signal = await self.strategy.compute_signal(ticker)
-        assert signal is not None
+        # First push price up to set highest_price (0.00001050)
+        up_ticker = make_ticker("PEPE/USDT", Decimal("0.00001050"), Decimal("2000000"))
+        await self.strategy.compute_signal(up_ticker)
+        # Then drop below trailing stop: 0.00001050 * 0.992 = 0.000010416
+        # 0.00001040 < 0.000010416 → triggers trailing_stop
+        down_ticker = make_ticker("PEPE/USDT", Decimal("0.00001040"), Decimal("2000000"))
+        signal = await self.strategy.compute_signal(down_ticker)
+        assert signal is not None, "Should trigger trailing_stop on retracement"
         assert signal.signal_type == SignalType.SELL_LONG
-        assert signal.metadata["exit_reason"] == "take_profit"
-        assert signal.amount > 0  # exit signal must have non-zero amount
+        assert signal.metadata["exit_reason"] == "trailing_stop"
+        assert signal.amount > 0
 
     @pytest.mark.asyncio
     async def test_stop_loss_exit(self) -> None:
@@ -210,19 +219,19 @@ class TestLongExit:
         assert signal.metadata["exit_reason"] == "stop_loss"
 
     @pytest.mark.asyncio
-    async def test_trailing_stop_exit(self) -> None:
+    async def test_trailing_stop_retrace_exit(self) -> None:
         for _ in range(30):
             self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
         self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"),
                                    amount=Decimal("1000000"), side="long")
-        # Price goes up to 0.00001010 (+1.0%, BELOW new TP of +1.5% = 0.00001015)
-        up_ticker = make_ticker("PEPE/USDT", Decimal("0.00001010"), Decimal("2000000"))
+        # Price rises to 0.00001050 (+5%), sets highest_price
+        up_ticker = make_ticker("PEPE/USDT", Decimal("0.00001050"), Decimal("2000000"))
         signal1 = await self.strategy.compute_signal(up_ticker)
-        assert signal1 is None, f"Should not trigger at 1.0% gain (below 1.5% TP)"
+        assert signal1 is None, "Should not trigger while price is rising"
 
-        # Price drops below trailing stop: high=0.00001010, trail=0.00001010*(1-0.01)=0.000009999
-        # 0.00000999 < 0.000009999 → triggers trailing_stop
-        down_ticker = make_ticker("PEPE/USDT", Decimal("0.00000999"), Decimal("2000000"))
+        # Price drops: trail = 0.00001050 * (1-0.008) = 0.000010416
+        # 0.00001040 < 0.000010416 → triggers trailing_stop (0.8%)
+        down_ticker = make_ticker("PEPE/USDT", Decimal("0.00001040"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(down_ticker)
         assert signal is not None
         assert signal.metadata["exit_reason"] == "trailing_stop"

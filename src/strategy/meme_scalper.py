@@ -8,8 +8,8 @@ Entry signals:
     SHORT: volume spike + price < EMA(5) + RSI in [55, 75] (neutral→overbought zone)
 
 Exit signals (all-or-nothing, no partial exits):
-    LONG:  take_profit (+1.5%) / stop_loss (-2.5%) / trailing_stop (-1%) / max_hold (20 min)
-    SHORT: take_profit (-1.5%) / stop_loss (+2.5%) / trailing_stop (+1%) / max_hold (20 min)
+    LONG:  trailing_stop (-0.8%) / stop_loss (-2.5%) / max_hold (10 min)
+    SHORT: trailing_stop (+0.8%) / stop_loss (+2.5%) / max_hold (10 min)
 
 Fee gate: expected_return > entry_fee + exit_fee + slippage + min_profit_buffer
 
@@ -107,11 +107,11 @@ class MemeScalperStrategy(BaseStrategy):
         rsi_long_max: int = 55,     # long: RSI must be <= this (stay below neutral)
         rsi_short_min: int = 55,    # short: RSI must be >= this (stay above neutral)
         rsi_short_max: int = 75,    # short: RSI must be <= this (avoid extreme overbought)
-        # Exit parameters
-        take_profit_pct: Decimal = Decimal("1.5"),  # tighter TP → higher hit rate
+        # Exit parameters — trailing stop primary, SL as safety net, short max hold
+        take_profit_pct: Decimal = Decimal("1.5"),  # kept for backward compat
         stop_loss_pct: Decimal = Decimal("2.5"),
-        max_hold_minutes: int = 20,        # scalping: exit within 20 min if no TP/SL hit
-        trailing_stop_pct: Decimal = Decimal("1"),
+        max_hold_minutes: int = 10,        # fast rotation: exit within 10 min
+        trailing_stop_pct: Decimal = Decimal("0.8"),  # tighter trail (0.8%)
         # Kline
         kline_lookback: int = 20,
         # Position sizing (USDT notional per trade)
@@ -216,6 +216,10 @@ class MemeScalperStrategy(BaseStrategy):
         symbol = ticker.symbol
         price = ticker.last
         volume_24h = ticker.volume
+
+        # Price sanity filter: skip extreme low-price coins (e.g. BABYDOGE at 0)
+        if price < Decimal("1e-8"):
+            return None
 
         self.update_ticker_data(symbol, price, volume_24h)
         state = self._coins[symbol]
@@ -386,27 +390,30 @@ class MemeScalperStrategy(BaseStrategy):
         return None
 
     def _check_long_exit(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
-        """Exit long: TP / SL / trailing stop / time stop (in priority order)."""
+        """Exit long: trailing_stop (primary) / stop_loss (safety) / time_stop (deadline).
+
+        Trailing stop activates immediately from entry price, not just above it.
+        This captures small upward moves instead of waiting for a fixed TP target.
+        """
         price = ticker.last
         entry = state.entry_price
 
-        # 1. Take profit — price reached target
-        tp_price = entry * (Decimal("1") + self.take_profit_pct)
-        if price >= tp_price:
-            return self._build_exit_signal(state, ticker, "take_profit", SignalType.SELL_LONG, OrderSide.SELL)
-
-        # 2. Stop loss — price dropped to threshold
+        # 1. Stop loss — hard safety net at -2.5%
         sl_price = entry * (Decimal("1") - self.stop_loss_pct)
         if price <= sl_price:
             return self._build_exit_signal(state, ticker, "stop_loss", SignalType.SELL_LONG, OrderSide.SELL)
 
-        # 3. Trailing stop — price retraced from peak by trailing_stop_pct
-        if state.highest_price > entry:
+        # 2. Trailing stop — activates from highest price (starts at entry on fill)
+        # After entry, if price rises at all, trail kicks in at 0.8% below peak.
+        # If price never rises above entry, exit via time_stop at 10 min.
+        if state.highest_price >= entry:
             trail_price = state.highest_price * (Decimal("1") - self.trailing_stop_pct)
             if price <= trail_price:
-                return self._build_exit_signal(state, ticker, "trailing_stop", SignalType.SELL_LONG, OrderSide.SELL)
+                # If highest > entry, we locked some profit → trailing_stop exit
+                reason = "trailing_stop" if state.highest_price > entry else "time_stop"
+                return self._build_exit_signal(state, ticker, reason, SignalType.SELL_LONG, OrderSide.SELL)
 
-        # 4. Time stop — held beyond max_hold_seconds
+        # 3. Time stop — max hold expired
         if state.entry_time > 0:
             held = time.time() - state.entry_time
             if held > self.max_hold_seconds:
@@ -415,27 +422,23 @@ class MemeScalperStrategy(BaseStrategy):
         return None
 
     def _check_short_exit(self, state: MemeCoinState, ticker: Ticker) -> Optional[Signal]:
-        """Exit short: TP (price drops) / SL (price rises) / trailing / time."""
+        """Exit short: trailing_stop (primary) / stop_loss (safety) / time_stop."""
         price = ticker.last
         entry = state.entry_price
 
-        # 1. Take profit — price dropped to target
-        tp_price = entry * (Decimal("1") - self.take_profit_pct)
-        if price <= tp_price:
-            return self._build_exit_signal(state, ticker, "take_profit", SignalType.BUY_SHORT, OrderSide.BUY)
-
-        # 2. Stop loss — price rose to threshold
+        # 1. Stop loss — price rose 2.5%
         sl_price = entry * (Decimal("1") + self.stop_loss_pct)
         if price >= sl_price:
             return self._build_exit_signal(state, ticker, "stop_loss", SignalType.BUY_SHORT, OrderSide.BUY)
 
-        # 3. Trailing stop — price rose from trough by trailing_stop_pct
-        if state.lowest_price > Decimal("0") and state.lowest_price < entry:
+        # 2. Trailing stop — from lowest price (starts at entry)
+        if state.lowest_price > Decimal("0") and state.lowest_price <= entry:
             trail_price = state.lowest_price * (Decimal("1") + self.trailing_stop_pct)
             if price >= trail_price:
-                return self._build_exit_signal(state, ticker, "trailing_stop", SignalType.BUY_SHORT, OrderSide.BUY)
+                reason = "trailing_stop" if state.lowest_price < entry else "time_stop"
+                return self._build_exit_signal(state, ticker, reason, SignalType.BUY_SHORT, OrderSide.BUY)
 
-        # 4. Time stop
+        # 3. Time stop
         if state.entry_time > 0:
             held = time.time() - state.entry_time
             if held > self.max_hold_seconds:

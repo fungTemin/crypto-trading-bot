@@ -31,6 +31,7 @@ from rich.layout import Layout
 from src.config.loader import load_config
 from src.core.constants import MarketType, OrderSide, SignalType
 from src.core.event_bus import EventBus
+from src.discovery.volatility_scanner import VolatilityScanner
 from src.exchange.models import Ticker
 from src.exchange.paper_exchange import PaperExchange
 from src.exchange.synthetic_feed import SyntheticTickerFeed
@@ -117,7 +118,7 @@ class MemeBot:
             rsi_long_min=35, rsi_long_max=55,
             rsi_short_min=55, rsi_short_max=75,
             take_profit_pct=Decimal("1.5"), stop_loss_pct=Decimal("2.5"),
-            max_hold_minutes=20, trailing_stop_pct=Decimal("1"),
+            max_hold_minutes=10, trailing_stop_pct=Decimal("0.8"),
             base_order_usdt=base_order,
         )
         self.strategy.set_symbols(self._symbols)
@@ -151,6 +152,10 @@ class MemeBot:
         self._kline_interval = 60.0  # fetch klines every 60s per symbol
         self._exit_time: dict[str, float] = {}  # symbol -> last exit timestamp (for post-exit delay)
         self._post_exit_delay = 60.0  # wait 1 kline (60s) before re-entry after exit
+        # Hourly volatility scanner — refreshes symbol list dynamically
+        self._scanner = VolatilityScanner(min_volume_usdt=100_000, top_n=30)
+        self._last_scan_time: float = 0
+        self._scan_interval = 3600.0  # rescan every 1 hour
 
     # ---- Build UI ----
 
@@ -384,6 +389,10 @@ class MemeBot:
         # Update strategy equity for dynamic position sizing
         self.strategy.current_equity = self.exchange.get_equity("USDT")
 
+        # Hourly volatility scan — refresh symbol list with top volatile coins
+        if now - self._last_scan_time > self._scan_interval:
+            await self._refresh_symbols()
+
         # Process signals sequentially (avoids race conditions on positions/balances)
         for symbol, raw, err in results:
             if not self._running:
@@ -430,6 +439,23 @@ class MemeBot:
                                "pnl_pct": float(pnl / self.starting_capital * 100) if self.starting_capital > 0 else 0,
                                "symbols": len(self._symbols),
                                "mode": self.mode})
+
+    async def _refresh_symbols(self) -> None:
+        """Scan OKX for top volatile coins and update strategy symbol list."""
+        if self._data_feed is None or not hasattr(self._data_feed, 'fetch_tickers'):
+            return
+        try:
+            symbols = await self._scanner.scan(self._data_feed)
+            if symbols and len(symbols) >= 10:
+                self._symbols = symbols
+                self.strategy.set_symbols(symbols)
+                self._profiles = self._scanner.profiles
+                self._last_scan_time = time_module.time()
+                logger.info("Symbols refreshed",
+                            extra={"count": len(symbols),
+                                   "top3": symbols[:3]})
+        except Exception as e:
+            logger.warning("Volatility scan failed", extra={"error": str(e)[:100]})
 
     async def _fetch_kline_for_symbol(self, symbol: str) -> None:
         """Fetch kline data for one symbol (used concurrently)."""
