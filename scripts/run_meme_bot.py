@@ -103,8 +103,8 @@ class MemeBot:
         self.fee_calculator = FeeCalculator(fee_schedule=fs, min_profit_buffer=Decimal("0.0005"))
         self.event_bus = EventBus()
 
-        # 合约: $25/笔(预留$5给手续费), 现货: $7/笔 (23% of $30, 允许3-4并发仓位)
-        base_order = Decimal("25") if market_type == MarketType.FUTURE else Decimal("7")
+        # 合约: $25/笔(预留$5给手续费), 现货: $9/笔 (30% of $30, 3并发, 费率0.17%/笔)
+        base_order = Decimal("25") if market_type == MarketType.FUTURE else Decimal("9")
 
         self.strategy = MemeScalperStrategy(
             market_type=self.market_type, fee_calculator=self.fee_calculator,
@@ -114,7 +114,7 @@ class MemeBot:
             rsi_long_min=35, rsi_long_max=55,
             rsi_short_min=55, rsi_short_max=75,
             take_profit_pct=Decimal("2"), stop_loss_pct=Decimal("2.5"),
-            max_hold_minutes=15, trailing_stop_pct=Decimal("1"),
+            max_hold_minutes=20, trailing_stop_pct=Decimal("1"),
             base_order_usdt=base_order,
         )
         self.strategy.set_symbols(self._symbols)

@@ -89,8 +89,9 @@ class RiskManager:
             quote_balance = balances.get(quote)
             if quote_balance is None:
                 return False, f"Insufficient {quote} balance"
-            # Include estimated fee in cost check
-            total_cost = signal.price * signal.amount * (Decimal("1") + Decimal("0.001"))
+            # Use actual fee rate from signal's fee estimate (fallback: 0.1% taker)
+            fee_rate = signal.fee_estimate.entry_fee_rate if signal.fee_estimate else Decimal("0.001")
+            total_cost = signal.price * signal.amount * (Decimal("1") + fee_rate)
             if quote_balance.free < total_cost:
                 return False, f"Insufficient {quote} balance (need {total_cost})"
 
