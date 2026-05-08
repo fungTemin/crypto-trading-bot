@@ -8,8 +8,8 @@ Entry signals:
     SHORT: volume spike + price < EMA(5) + RSI in [55, 75] (neutral→overbought zone)
 
 Exit signals (all-or-nothing, no partial exits):
-    LONG:  take_profit (+2%) / stop_loss (-2.5%) / trailing_stop (-1%) / max_hold (20 min)
-    SHORT: take_profit (-2%) / stop_loss (+2.5%) / trailing_stop (+1%) / max_hold (20 min)
+    LONG:  take_profit (+1.5%) / stop_loss (-2.5%) / trailing_stop (-1%) / max_hold (20 min)
+    SHORT: take_profit (-1.5%) / stop_loss (+2.5%) / trailing_stop (+1%) / max_hold (20 min)
 
 Fee gate: expected_return > entry_fee + exit_fee + slippage + min_profit_buffer
 
@@ -108,7 +108,7 @@ class MemeScalperStrategy(BaseStrategy):
         rsi_short_min: int = 55,    # short: RSI must be >= this (stay above neutral)
         rsi_short_max: int = 75,    # short: RSI must be <= this (avoid extreme overbought)
         # Exit parameters
-        take_profit_pct: Decimal = Decimal("2"),
+        take_profit_pct: Decimal = Decimal("1.5"),  # tighter TP → higher hit rate
         stop_loss_pct: Decimal = Decimal("2.5"),
         max_hold_minutes: int = 20,        # scalping: exit within 20 min if no TP/SL hit
         trailing_stop_pct: Decimal = Decimal("1"),

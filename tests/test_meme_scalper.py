@@ -152,8 +152,8 @@ class TestShortSelling:
 
         self.strategy.record_entry("WIF/USDT", Decimal("0.50000000"),
                                    amount=Decimal("50"), side="short")
-        # TP for short: entry * (1 - 2%) = 0.49
-        ticker = make_ticker("WIF/USDT", Decimal("0.48900000"), Decimal("2000000"))
+        # TP for short: entry * (1 - 1.5%) = 0.4925
+        ticker = make_ticker("WIF/USDT", Decimal("0.49200000"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
 
         assert signal is not None
@@ -189,8 +189,8 @@ class TestLongExit:
             self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
         self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"),
                                    amount=Decimal("1000000"), side="long")
-        # TP: entry * 1.02 = 0.0000102
-        ticker = make_ticker("PEPE/USDT", Decimal("0.00001030"), Decimal("2000000"))
+        # TP: entry * 1.015 = 0.00001015
+        ticker = make_ticker("PEPE/USDT", Decimal("0.00001020"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(ticker)
         assert signal is not None
         assert signal.signal_type == SignalType.SELL_LONG
@@ -215,14 +215,14 @@ class TestLongExit:
             self.strategy.update_ticker_data("PEPE/USDT", Decimal("0.00001000"), Decimal("2000000"))
         self.strategy.record_entry("PEPE/USDT", Decimal("0.00001000"),
                                    amount=Decimal("1000000"), side="long")
-        # Price goes up to 0.00001015 (+1.5%, BELOW TP of +2% = 0.00001020)
-        up_ticker = make_ticker("PEPE/USDT", Decimal("0.00001015"), Decimal("2000000"))
+        # Price goes up to 0.00001010 (+1.0%, BELOW new TP of +1.5% = 0.00001015)
+        up_ticker = make_ticker("PEPE/USDT", Decimal("0.00001010"), Decimal("2000000"))
         signal1 = await self.strategy.compute_signal(up_ticker)
-        assert signal1 is None, f"Should not trigger at 1.5% gain"
+        assert signal1 is None, f"Should not trigger at 1.0% gain (below 1.5% TP)"
 
-        # Price drops below trailing stop: high=0.00001015, trail=0.00001015*(1-0.01)=0.0000100485
-        # 0.00001004 < 0.0000100485 → triggers trailing_stop
-        down_ticker = make_ticker("PEPE/USDT", Decimal("0.00001004"), Decimal("2000000"))
+        # Price drops below trailing stop: high=0.00001010, trail=0.00001010*(1-0.01)=0.000009999
+        # 0.00000999 < 0.000009999 → triggers trailing_stop
+        down_ticker = make_ticker("PEPE/USDT", Decimal("0.00000999"), Decimal("2000000"))
         signal = await self.strategy.compute_signal(down_ticker)
         assert signal is not None
         assert signal.metadata["exit_reason"] == "trailing_stop"
