@@ -147,7 +147,9 @@ class MemeBot:
         self._running = False
         self._data_feed = None
         self._prev_volumes: dict[str, Decimal] = {}
-        self.local_log = LocalTradeLogger("data/logs")
+        # Unique session tag: mode + capital (e.g. "spot_30", "futures_100")
+        session_tag = f"{market_type.value}_{capital}"
+        self.local_log = LocalTradeLogger("data/logs", tag=session_tag)
         self._last_kline_fetch: dict[str, float] = {}  # symbol -> last fetch timestamp
         self._kline_interval = 60.0  # fetch klines every 60s per symbol
         self._exit_time: dict[str, float] = {}  # symbol -> last exit timestamp (for post-exit delay)

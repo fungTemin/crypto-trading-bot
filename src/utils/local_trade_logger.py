@@ -11,13 +11,14 @@ from decimal import Decimal
 class LocalTradeLogger:
     """Writes trade records to local files only (data/logs/ is gitignored)."""
 
-    def __init__(self, base_path: str = "data/logs") -> None:
+    def __init__(self, base_path: str = "data/logs", tag: str = "") -> None:
         _os.makedirs(base_path, exist_ok=True)
         session_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.session_id = session_ts
-        self.csv_path = f"{base_path}/meme_session_{session_ts}.csv"
-        self.txt_path = f"{base_path}/meme_session_{session_ts}.txt"
-        self.json_path = f"{base_path}/meme_session_{session_ts}.json"
+        prefix = f"meme_{tag}_" if tag else "meme_session_"
+        self.csv_path = f"{base_path}/{prefix}{session_ts}.csv"
+        self.txt_path = f"{base_path}/{prefix}{session_ts}.txt"
+        self.json_path = f"{base_path}/{prefix}{session_ts}.json"
 
         with open(self.csv_path, "w") as f:
             f.write("timestamp,action,symbol,price,amount,expected_return_pct,exit_reason,"
